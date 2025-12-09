@@ -240,6 +240,106 @@ nolag.MessageHandler   // func(data any, meta MessageMeta)
 nolag.EventHandler     // func(args ...any)
 ```
 
+## REST API Client
+
+The SDK also includes a REST API client for managing apps, rooms, and actors.
+
+```go
+package main
+
+import (
+    "context"
+    "fmt"
+
+    nolag "github.com/NoLagApp/nolag-go"
+)
+
+func main() {
+    ctx := context.Background()
+
+    // Create API client with project-scoped API key
+    api := nolag.NewAPI("nlg_live_xxx.secret")
+
+    // List all apps in your project
+    apps, err := api.Apps.List(ctx, nil)
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Found %d apps\n", len(apps.Data))
+
+    // Create a new app
+    app, err := api.Apps.Create(ctx, nolag.AppCreate{
+        Name:        "my-chat-app",
+        Description: "A real-time chat application",
+    })
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Created app: %s\n", app.AppID)
+
+    // Create a room in the app
+    room, err := api.Rooms.Create(ctx, app.AppID, nolag.RoomCreate{
+        Name:        "general",
+        Slug:        "general",
+        Description: "General chat room",
+    })
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Created room: %s\n", room.RoomID)
+
+    // Create an actor (IMPORTANT: save the access token!)
+    actor, err := api.Actors.Create(ctx, nolag.ActorCreate{
+        Name:      "web-client",
+        ActorType: nolag.ActorDevice,
+    })
+    if err != nil {
+        panic(err)
+    }
+    fmt.Printf("Actor token (save this!): %s\n", actor.AccessToken)
+
+    // Update an app
+    newDesc := "Updated description"
+    _, err = api.Apps.Update(ctx, app.AppID, nolag.AppUpdate{
+        Description: &newDesc,
+    })
+
+    // Delete resources
+    api.Rooms.Delete(ctx, app.AppID, room.RoomID)
+    api.Actors.Delete(ctx, actor.ActorTokenID)
+    api.Apps.Delete(ctx, app.AppID)
+}
+```
+
+### API Types
+
+```go
+import nolag "github.com/NoLagApp/nolag-go"
+
+// API Client
+nolag.API             // REST API client
+nolag.APIOptions      // API client options
+nolag.NoLagAPIError   // API error type
+
+// Resources
+nolag.AppResource     // App data
+nolag.AppCreate       // Create app request
+nolag.AppUpdate       // Update app request
+
+nolag.RoomResource    // Room data
+nolag.RoomCreate      // Create room request
+nolag.RoomUpdate      // Update room request
+
+nolag.ActorResource   // Actor data
+nolag.ActorWithToken  // Actor with access token
+nolag.ActorCreate     // Create actor request
+nolag.ActorUpdate     // Update actor request
+
+// Utilities
+nolag.ListOptions     // Pagination options
+nolag.PaginatedApps   // Paginated response
+```
+
 ## Requirements
 
 - Go 1.21+
