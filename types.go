@@ -90,12 +90,15 @@ type SubscribeOptions struct {
 type EmitOptions struct {
 	QoS    *QoS
 	Retain bool
+	Echo   *bool // Whether to receive this message back if subscribed (default: true)
 }
 
 // MessageMeta contains metadata about a received message.
 type MessageMeta struct {
 	Sender    string
 	Timestamp time.Time
+	IsReplay  bool   // Whether this message is being replayed from history
+	MsgID     string // Unique message ID for ACK
 }
 
 // ActorPresence represents presence information for an actor.
@@ -133,16 +136,19 @@ const (
 
 // Internal message structure
 type protocolMessage struct {
-	Type    messageType    `msgpack:"type"`
-	Topic   string         `msgpack:"topic,omitempty"`
-	Data    any            `msgpack:"data,omitempty"`
-	Token   string         `msgpack:"token,omitempty"`
-	ID      string         `msgpack:"id,omitempty"`
-	QoS     QoS            `msgpack:"qos,omitempty"`
-	Retain  bool           `msgpack:"retain,omitempty"`
-	Options map[string]any `msgpack:"options,omitempty"`
-	Error   string         `msgpack:"error,omitempty"`
-	Meta    *messageMeta   `msgpack:"meta,omitempty"`
+	Type     messageType    `msgpack:"type"`
+	Topic    string         `msgpack:"topic,omitempty"`
+	Data     any            `msgpack:"data,omitempty"`
+	Token    string         `msgpack:"token,omitempty"`
+	ID       string         `msgpack:"id,omitempty"`
+	QoS      QoS            `msgpack:"qos,omitempty"`
+	Retain   bool           `msgpack:"retain,omitempty"`
+	Echo     *bool          `msgpack:"echo,omitempty"`
+	Options  map[string]any `msgpack:"options,omitempty"`
+	Error    string         `msgpack:"error,omitempty"`
+	Meta     *messageMeta   `msgpack:"meta,omitempty"`
+	IsReplay bool           `msgpack:"isReplay,omitempty"`
+	MsgID    string         `msgpack:"msgId,omitempty"`
 }
 
 type messageMeta struct {

@@ -294,6 +294,7 @@ func (c *Client) Emit(topic string, data any, opts ...EmitOptions) error {
 			msg.QoS = *opt.QoS
 		}
 		msg.Retain = opt.Retain
+		msg.Echo = opt.Echo
 	}
 
 	// For QoS 0, fire and forget
@@ -519,7 +520,10 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 		c.mu.RUnlock()
 
 		if ok && handler != nil {
-			meta := MessageMeta{}
+			meta := MessageMeta{
+				IsReplay: msg.IsReplay,
+				MsgID:    msg.MsgID,
+			}
 			if msg.Meta != nil {
 				meta.Sender = msg.Meta.Sender
 				if msg.Meta.Timestamp > 0 {
@@ -648,4 +652,68 @@ func (c *Client) log(args ...any) {
 	if c.options.Debug {
 		log.Println(append([]any{"[NoLag]"}, args...)...)
 	}
+}
+
+// SetApp creates an App context for scoped pub/sub.
+//
+// Example:
+//
+//	room := client.SetApp("chat").SetRoom("general")
+//	room.Subscribe("messages", handler)
+//	room.Emit("messages", data)
+func (c *Client) SetApp(app string) *App {
+	return &App{client: c, app: app}
+}
+
+// App is an intermediate context for setting the room.
+type App struct {
+	client *Client
+	app    string
+}
+
+// SetRoom creates a Room context for scoped pub/sub within app/room.
+func (a *App) SetRoom(room string) *Room {
+	return &Room{client: a.client, app: a.app, room: room}
+}
+
+// Room provides a scoped context for pub/sub within an app/room.
+// Topics are automatically prefixed with "app/room/".
+type Room struct {
+	client *Client
+	app    string
+	room   string
+}
+
+// Prefix returns the full topic prefix (app/room).
+func (r *Room) Prefix() string {
+	return fmt.Sprintf("%s/%s", r.app, r.room)
+}
+
+func (r *Room) fullTopic(topic string) string {
+	return fmt.Sprintf("%s/%s/%s", r.app, r.room, topic)
+}
+
+// Subscribe registers a handler for messages on the given topic (auto-prefixed with app/room).
+func (r *Room) Subscribe(topic string, handler MessageHandler, opts ...SubscribeOptions) error {
+	return r.client.Subscribe(r.fullTopic(topic), handler, opts...)
+}
+
+// Unsubscribe removes a subscription from a topic (auto-prefixed with app/room).
+func (r *Room) Unsubscribe(topic string) error {
+	return r.client.Unsubscribe(r.fullTopic(topic))
+}
+
+// Emit publishes a message to a topic (auto-prefixed with app/room).
+func (r *Room) Emit(topic string, data any, opts ...EmitOptions) error {
+	return r.client.Emit(r.fullTopic(topic), data, opts...)
+}
+
+// On registers an event handler for the given topic (auto-prefixed with app/room).
+func (r *Room) On(topic string, handler EventHandler) {
+	r.client.On(r.fullTopic(topic), handler)
+}
+
+// Off removes all handlers for an event (auto-prefixed with app/room).
+func (r *Room) Off(topic string) {
+	r.client.Off(r.fullTopic(topic))
 }
