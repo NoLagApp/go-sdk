@@ -136,19 +136,22 @@ const (
 
 // Internal message structure
 type protocolMessage struct {
-	Type     messageType    `msgpack:"type"`
-	Topic    string         `msgpack:"topic,omitempty"`
-	Data     any            `msgpack:"data,omitempty"`
-	Token    string         `msgpack:"token,omitempty"`
-	ID       string         `msgpack:"id,omitempty"`
-	QoS      QoS            `msgpack:"qos,omitempty"`
-	Retain   bool           `msgpack:"retain,omitempty"`
-	Echo     *bool          `msgpack:"echo,omitempty"`
-	Options  map[string]any `msgpack:"options,omitempty"`
-	Error    string         `msgpack:"error,omitempty"`
-	Meta     *messageMeta   `msgpack:"meta,omitempty"`
-	IsReplay bool           `msgpack:"isReplay,omitempty"`
-	MsgID    string         `msgpack:"msgId,omitempty"`
+	Type             messageType    `msgpack:"type"`
+	Topic            string         `msgpack:"topic,omitempty"`
+	Data             any            `msgpack:"data,omitempty"`
+	Token            string         `msgpack:"token,omitempty"`
+	ID               string         `msgpack:"id,omitempty"`
+	QoS              QoS            `msgpack:"qos,omitempty"`
+	Retain           bool           `msgpack:"retain,omitempty"`
+	Echo             *bool          `msgpack:"echo,omitempty"`
+	LoadBalance      bool           `msgpack:"loadBalance,omitempty"`
+	LoadBalanceGroup string         `msgpack:"loadBalanceGroup,omitempty"`
+	Reconnect        bool           `msgpack:"reconnect,omitempty"`
+	Options          map[string]any `msgpack:"options,omitempty"`
+	Error            string         `msgpack:"error,omitempty"`
+	Meta             *messageMeta   `msgpack:"meta,omitempty"`
+	IsReplay         bool           `msgpack:"isReplay,omitempty"`
+	MsgID            string         `msgpack:"msgId,omitempty"`
 }
 
 type messageMeta struct {

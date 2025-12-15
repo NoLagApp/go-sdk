@@ -138,6 +138,12 @@ func (c *Client) authenticate() error {
 		Token: c.token,
 	}
 
+	// Include reconnect flag if this is a reconnection attempt
+	// This tells the server to restore subscriptions
+	if c.reconnectCount > 0 {
+		msg.Reconnect = true
+	}
+
 	resp, err := c.sendAndWait(msg, msgTypeAuthAck, 10*time.Second)
 	if err != nil {
 		return fmt.Errorf("auth failed: %w", err)
@@ -208,19 +214,28 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 		QoS:   c.options.QoS,
 	}
 
+	// Use connection-level defaults, allow per-topic override
+	loadBalance := c.options.LoadBalance
+	loadBalanceGroup := c.options.LoadBalanceGroup
+
 	if len(opts) > 0 {
 		opt := opts[0]
 		if opt.QoS != nil {
 			msg.QoS = *opt.QoS
 		}
-		if opt.LoadBalance != nil || opt.LoadBalanceGroup != "" {
-			msg.Options = make(map[string]any)
-			if opt.LoadBalance != nil {
-				msg.Options["load_balance"] = *opt.LoadBalance
-			}
-			if opt.LoadBalanceGroup != "" {
-				msg.Options["load_balance_group"] = opt.LoadBalanceGroup
-			}
+		if opt.LoadBalance != nil {
+			loadBalance = *opt.LoadBalance
+		}
+		if opt.LoadBalanceGroup != "" {
+			loadBalanceGroup = opt.LoadBalanceGroup
+		}
+	}
+
+	// Only include loadBalance fields when actually using load balancing
+	if loadBalance {
+		msg.LoadBalance = true
+		if loadBalanceGroup != "" {
+			msg.LoadBalanceGroup = loadBalanceGroup
 		}
 	}
 
