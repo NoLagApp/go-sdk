@@ -27,6 +27,7 @@ type Client struct {
 	conn           *websocket.Conn
 	status         ConnectionStatus
 	authenticated  bool
+	actorID        string
 	subscriptions  map[string]MessageHandler
 	eventHandlers  map[string][]EventHandler
 	pendingAcks    map[string]chan *protocolMessage
@@ -153,6 +154,15 @@ func (c *Client) authenticate() error {
 		return fmt.Errorf("%w: %s", ErrAuthFailed, resp.Error)
 	}
 
+	// Extract actor ID from response
+	if resp.Data != nil {
+		if data, ok := resp.Data.(map[string]any); ok {
+			if actorID, ok := data["actorId"].(string); ok {
+				c.actorID = actorID
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -197,6 +207,13 @@ func (c *Client) Status() ConnectionStatus {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.status
+}
+
+// ActorID returns the actor ID assigned by the server after authentication.
+func (c *Client) ActorID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.actorID
 }
 
 // Subscribe registers a handler for messages on the given topic.
