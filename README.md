@@ -8,6 +8,17 @@ Real-time messaging SDK for Go applications.
 go get github.com/NoLagApp/nolag-go
 ```
 
+## Setup
+
+Before using the SDK, you need to set up your NoLag project:
+
+1. **Create a Project** in the [NoLag Dashboard](https://app.nolag.app)
+2. **Create an App** with your desired topics
+3. **Create Topics** in your App schema (e.g., `messages`, `status`, `commands`)
+4. **Create Actors** to get access tokens (`at_xxx...`)
+
+> **Note:** Topics must be defined in your App schema before you can subscribe or publish to them. Rooms are created dynamically at runtime.
+
 ## Quick Start
 
 ```go
