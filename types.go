@@ -152,6 +152,9 @@ type protocolMessage struct {
 	Meta             *messageMeta   `msgpack:"meta,omitempty"`
 	IsReplay         bool           `msgpack:"isReplay,omitempty"`
 	MsgID            string         `msgpack:"msgId,omitempty"`
+	// Auth response fields
+	Success      bool   `msgpack:"success,omitempty"`
+	ActorTokenId string `msgpack:"actorTokenId,omitempty"`
 }
 
 type messageMeta struct {

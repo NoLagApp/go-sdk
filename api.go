@@ -222,6 +222,7 @@ type RoomResource struct {
 	Description string         `json:"description,omitempty"`
 	RoomType    string         `json:"roomType,omitempty"`
 	IsEnabled   bool           `json:"isEnabled"`
+	Topics      []string       `json:"topics,omitempty"`
 	Config      map[string]any `json:"config,omitempty"`
 	CreatedAt   string         `json:"createdAt,omitempty"`
 	UpdatedAt   string         `json:"updatedAt,omitempty"`
@@ -232,6 +233,7 @@ type RoomCreate struct {
 	Name        string         `json:"name"`
 	Slug        string         `json:"slug,omitempty"`
 	Description string         `json:"description,omitempty"`
+	Topics      []string       `json:"topics,omitempty"`
 	Config      map[string]any `json:"config,omitempty"`
 }
 
@@ -240,6 +242,7 @@ type RoomUpdate struct {
 	Name        *string        `json:"name,omitempty"`
 	Description *string        `json:"description,omitempty"`
 	IsEnabled   *bool          `json:"isEnabled,omitempty"`
+	Topics      []string       `json:"topics,omitempty"`
 	Config      map[string]any `json:"config,omitempty"`
 }
 

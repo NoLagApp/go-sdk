@@ -67,9 +67,15 @@ func mergeOptions(defaults, custom Options) Options {
 	if custom.MaxReconnectAttempts > 0 {
 		defaults.MaxReconnectAttempts = custom.MaxReconnectAttempts
 	}
-	if custom.HeartbeatInterval >= 0 {
+	// Only override heartbeat if explicitly set (> 0 means custom value, we keep default otherwise)
+	// A value of -1 can be used to explicitly disable heartbeats
+	if custom.HeartbeatInterval > 0 {
 		defaults.HeartbeatInterval = custom.HeartbeatInterval
+	} else if custom.HeartbeatInterval < 0 {
+		// Negative value explicitly disables heartbeat
+		defaults.HeartbeatInterval = 0
 	}
+	// Note: custom.HeartbeatInterval == 0 means "not set", keep default
 	defaults.Reconnect = custom.Reconnect
 	defaults.QoS = custom.QoS
 	defaults.LoadBalance = custom.LoadBalance
@@ -145,25 +151,39 @@ func (c *Client) authenticate() error {
 		msg.Reconnect = true
 	}
 
-	resp, err := c.sendAndWait(msg, msgTypeAuthAck, 10*time.Second)
-	if err != nil {
+	// Auth uses a special handler (no message ID matching)
+	// The server responds with type: "auth" and success: true/false
+	authChan := make(chan *protocolMessage, 1)
+	c.mu.Lock()
+	c.pendingAcks["__auth__"] = authChan
+	c.mu.Unlock()
+
+	defer func() {
+		c.mu.Lock()
+		delete(c.pendingAcks, "__auth__")
+		c.mu.Unlock()
+	}()
+
+	if err := c.send(msg); err != nil {
 		return fmt.Errorf("auth failed: %w", err)
 	}
 
-	if resp.Error != "" {
-		return fmt.Errorf("%w: %s", ErrAuthFailed, resp.Error)
-	}
-
-	// Extract actor ID from response
-	if resp.Data != nil {
-		if data, ok := resp.Data.(map[string]any); ok {
-			if actorID, ok := data["actorId"].(string); ok {
-				c.actorID = actorID
-			}
+	select {
+	case resp := <-authChan:
+		if resp.Error != "" {
+			return fmt.Errorf("%w: %s", ErrAuthFailed, resp.Error)
 		}
+		if !resp.Success {
+			return fmt.Errorf("%w: server returned success=false", ErrAuthFailed)
+		}
+		// Extract actor ID from response
+		c.actorID = resp.ActorTokenId
+		return nil
+	case <-time.After(10 * time.Second):
+		return fmt.Errorf("auth failed: %w", ErrTimeout)
+	case <-c.done:
+		return fmt.Errorf("auth failed: %w", ErrNotConnected)
 	}
-
-	return nil
 }
 
 // Close disconnects from the broker.
@@ -217,6 +237,7 @@ func (c *Client) ActorID() string {
 }
 
 // Subscribe registers a handler for messages on the given topic.
+// Note: Subscribe is fire-and-forget like the JS SDK - it doesn't wait for server acknowledgment.
 func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...SubscribeOptions) error {
 	c.mu.RLock()
 	if c.status != StatusConnected {
@@ -228,7 +249,6 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 	msg := &protocolMessage{
 		Type:  msgTypeSubscribe,
 		Topic: topic,
-		QoS:   c.options.QoS,
 	}
 
 	// Use connection-level defaults, allow per-topic override
@@ -237,9 +257,6 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 
 	if len(opts) > 0 {
 		opt := opts[0]
-		if opt.QoS != nil {
-			msg.QoS = *opt.QoS
-		}
 		if opt.LoadBalance != nil {
 			loadBalance = *opt.LoadBalance
 		}
@@ -256,13 +273,9 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 		}
 	}
 
-	resp, err := c.sendAndWait(msg, msgTypeSubAck, 10*time.Second)
-	if err != nil {
+	// Fire-and-forget like JS SDK - don't wait for ack
+	if err := c.send(msg); err != nil {
 		return fmt.Errorf("subscribe failed: %w", err)
-	}
-
-	if resp.Error != "" {
-		return fmt.Errorf("subscribe failed: %s", resp.Error)
 	}
 
 	c.mu.Lock()
@@ -274,6 +287,7 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 }
 
 // Unsubscribe removes a subscription from a topic.
+// Note: Unsubscribe is fire-and-forget like the JS SDK.
 func (c *Client) Unsubscribe(topic string) error {
 	c.mu.RLock()
 	if c.status != StatusConnected {
@@ -287,13 +301,9 @@ func (c *Client) Unsubscribe(topic string) error {
 		Topic: topic,
 	}
 
-	resp, err := c.sendAndWait(msg, msgTypeUnsubAck, 10*time.Second)
-	if err != nil {
+	// Fire-and-forget like JS SDK
+	if err := c.send(msg); err != nil {
 		return fmt.Errorf("unsubscribe failed: %w", err)
-	}
-
-	if resp.Error != "" {
-		return fmt.Errorf("unsubscribe failed: %s", resp.Error)
 	}
 
 	c.mu.Lock()
@@ -305,6 +315,7 @@ func (c *Client) Unsubscribe(topic string) error {
 }
 
 // Emit publishes a message to a topic.
+// Note: Emit is fire-and-forget like the JS SDK.
 func (c *Client) Emit(topic string, data any, opts ...EmitOptions) error {
 	c.mu.RLock()
 	if c.status != StatusConnected {
@@ -317,34 +328,16 @@ func (c *Client) Emit(topic string, data any, opts ...EmitOptions) error {
 		Type:  msgTypePublish,
 		Topic: topic,
 		Data:  data,
-		QoS:   c.options.QoS,
 	}
 
 	if len(opts) > 0 {
 		opt := opts[0]
-		if opt.QoS != nil {
-			msg.QoS = *opt.QoS
-		}
 		msg.Retain = opt.Retain
 		msg.Echo = opt.Echo
 	}
 
-	// For QoS 0, fire and forget
-	if msg.QoS == QoSAtMostOnce {
-		return c.send(msg)
-	}
-
-	// For QoS 1+, wait for ack
-	resp, err := c.sendAndWait(msg, msgTypePubAck, 10*time.Second)
-	if err != nil {
-		return fmt.Errorf("emit failed: %w", err)
-	}
-
-	if resp.Error != "" {
-		return fmt.Errorf("emit failed: %s", resp.Error)
-	}
-
-	return nil
+	// Fire-and-forget like JS SDK
+	return c.send(msg)
 }
 
 // SetPresence sets the presence data for this client.
@@ -485,13 +478,16 @@ func (c *Client) sendAndWait(msg *protocolMessage, ackType messageType, timeout 
 }
 
 func (c *Client) readLoop() {
+	c.log("readLoop started")
 	defer func() {
+		c.log("readLoop exiting")
 		c.handleDisconnect()
 	}()
 
 	for {
 		select {
 		case <-c.done:
+			c.log("readLoop: done channel closed")
 			return
 		default:
 		}
@@ -501,10 +497,13 @@ func (c *Client) readLoop() {
 		c.mu.RUnlock()
 
 		if conn == nil {
+			c.log("readLoop: conn is nil")
 			return
 		}
 
+		c.log("readLoop: waiting for message...")
 		messageType, data, err := conn.ReadMessage()
+		c.log("readLoop: got message, type:", messageType, "len:", len(data), "err:", err)
 		if err != nil {
 			c.log("Read error:", err)
 			return
@@ -517,12 +516,15 @@ func (c *Client) readLoop() {
 		}
 
 		if messageType != websocket.BinaryMessage {
+			c.log("readLoop: skipping non-binary message type:", messageType)
 			continue
 		}
 
+		c.log("Received binary message, length:", len(data))
+
 		var msg protocolMessage
 		if err := msgpack.Unmarshal(data, &msg); err != nil {
-			c.log("Unmarshal error:", err)
+			c.log("Unmarshal error:", err, "data (first 100 bytes):", string(data[:min(len(data), 100)]))
 			continue
 		}
 
@@ -531,7 +533,31 @@ func (c *Client) readLoop() {
 }
 
 func (c *Client) handleMessage(msg *protocolMessage) {
-	// Check for pending ack
+	c.log("Received message type:", msg.Type, "ID:", msg.ID, "Topic:", msg.Topic)
+
+	// Handle auth response specially (no message ID)
+	if msg.Type == msgTypeAuth {
+		c.log("Auth response received, success:", msg.Success, "error:", msg.Error)
+		c.mu.RLock()
+		authChan, ok := c.pendingAcks["__auth__"]
+		c.mu.RUnlock()
+		c.log("Auth channel exists:", ok)
+		if ok {
+			// Check success field - if false, set error
+			if !msg.Success && msg.Error == "" {
+				msg.Error = "authentication failed"
+			}
+			select {
+			case authChan <- msg:
+				c.log("Auth response sent to channel")
+			default:
+				c.log("Auth channel full, dropping response")
+			}
+			return
+		}
+	}
+
+	// Check for pending ack by message ID
 	if msg.ID != "" {
 		c.mu.RLock()
 		ackChan, ok := c.pendingAcks[msg.ID]
