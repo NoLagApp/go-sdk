@@ -1,7 +1,7 @@
-// E2E Tests for NoLag Go SDK with Kraken-v2
+// E2E Tests for NoLag Go SDK with Kraken Proxy
 //
 // Prerequisites:
-// 1. Start kraken-v2: cd kraken-v2 && docker-compose up -d
+// 1. Start kraken-proxy: cd kraken-proxy && docker-compose up -d
 // 2. Start Titus: cd titus && npm run dev
 // 3. Set environment variables:
 //    - NOLAG_TEST_TOKEN: Valid access token from Titus

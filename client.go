@@ -29,6 +29,7 @@ type Client struct {
 	authenticated  bool
 	actorID        string
 	subscriptions  map[string]MessageHandler
+	topicFilters   map[string][]string
 	eventHandlers  map[string][]EventHandler
 	pendingAcks    map[string]chan *protocolMessage
 	messageID      int
@@ -52,6 +53,7 @@ func New(token string, opts ...Options) *Client {
 		options:       options,
 		status:        StatusDisconnected,
 		subscriptions: make(map[string]MessageHandler),
+		topicFilters:  make(map[string][]string),
 		eventHandlers: make(map[string][]EventHandler),
 		pendingAcks:   make(map[string]chan *protocolMessage),
 	}
@@ -263,6 +265,12 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 		if opt.LoadBalanceGroup != "" {
 			loadBalanceGroup = opt.LoadBalanceGroup
 		}
+		if len(opt.Filters) > 0 {
+			msg.Filters = opt.Filters
+			c.mu.Lock()
+			c.topicFilters[topic] = opt.Filters
+			c.mu.Unlock()
+		}
 	}
 
 	// Only include loadBalance fields when actually using load balancing
@@ -308,10 +316,85 @@ func (c *Client) Unsubscribe(topic string) error {
 
 	c.mu.Lock()
 	delete(c.subscriptions, topic)
+	delete(c.topicFilters, topic)
 	c.mu.Unlock()
 
 	c.log("Unsubscribed from:", topic)
 	return nil
+}
+
+// SetFilters replaces all filters for a topic.
+// Empty slice switches back to wildcard (receive all messages).
+func (c *Client) SetFilters(topic string, filters []string) error {
+	c.mu.RLock()
+	if c.status != StatusConnected {
+		c.mu.RUnlock()
+		return ErrNotConnected
+	}
+	c.mu.RUnlock()
+
+	msg := &protocolMessage{
+		Type:    "setFilters",
+		Topic:   topic,
+		Filters: filters,
+	}
+
+	if err := c.send(msg); err != nil {
+		return fmt.Errorf("setFilters failed: %w", err)
+	}
+
+	c.mu.Lock()
+	if len(filters) > 0 {
+		c.topicFilters[topic] = filters
+	} else {
+		delete(c.topicFilters, topic)
+	}
+	c.mu.Unlock()
+
+	return nil
+}
+
+// AddFilters adds filters to the existing set for a topic.
+func (c *Client) AddFilters(topic string, filters []string) error {
+	c.mu.RLock()
+	existing := c.topicFilters[topic]
+	c.mu.RUnlock()
+
+	merged := make(map[string]bool)
+	for _, f := range existing {
+		merged[f] = true
+	}
+	for _, f := range filters {
+		merged[f] = true
+	}
+
+	result := make([]string, 0, len(merged))
+	for f := range merged {
+		result = append(result, f)
+	}
+
+	return c.SetFilters(topic, result)
+}
+
+// RemoveFilters removes specific filters from a topic.
+func (c *Client) RemoveFilters(topic string, filters []string) error {
+	c.mu.RLock()
+	existing := c.topicFilters[topic]
+	c.mu.RUnlock()
+
+	remove := make(map[string]bool)
+	for _, f := range filters {
+		remove[f] = true
+	}
+
+	result := make([]string, 0)
+	for _, f := range existing {
+		if !remove[f] {
+			result = append(result, f)
+		}
+	}
+
+	return c.SetFilters(topic, result)
 }
 
 // Emit publishes a message to a topic.
@@ -334,6 +417,9 @@ func (c *Client) Emit(topic string, data any, opts ...EmitOptions) error {
 		opt := opts[0]
 		msg.Retain = opt.Retain
 		msg.Echo = opt.Echo
+		if opt.Filter != "" {
+			msg.Filter = opt.Filter
+		}
 	}
 
 	// Fire-and-forget like JS SDK
@@ -581,6 +667,7 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 			meta := MessageMeta{
 				IsReplay: msg.IsReplay,
 				MsgID:    msg.MsgID,
+				Filter:   msg.Filter,
 			}
 			if msg.Meta != nil {
 				meta.Sender = msg.Meta.Sender
@@ -764,6 +851,21 @@ func (r *Room) Unsubscribe(topic string) error {
 // Emit publishes a message to a topic (auto-prefixed with app/room).
 func (r *Room) Emit(topic string, data any, opts ...EmitOptions) error {
 	return r.client.Emit(r.fullTopic(topic), data, opts...)
+}
+
+// SetFilters replaces all filters for a topic (auto-prefixed with app/room).
+func (r *Room) SetFilters(topic string, filters []string) error {
+	return r.client.SetFilters(r.fullTopic(topic), filters)
+}
+
+// AddFilters adds filters to existing set for a topic (auto-prefixed with app/room).
+func (r *Room) AddFilters(topic string, filters []string) error {
+	return r.client.AddFilters(r.fullTopic(topic), filters)
+}
+
+// RemoveFilters removes specific filters from a topic (auto-prefixed with app/room).
+func (r *Room) RemoveFilters(topic string, filters []string) error {
+	return r.client.RemoveFilters(r.fullTopic(topic), filters)
 }
 
 // On registers an event handler for the given topic (auto-prefixed with app/room).

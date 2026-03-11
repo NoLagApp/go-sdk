@@ -84,13 +84,15 @@ type SubscribeOptions struct {
 	QoS              *QoS
 	LoadBalance      *bool
 	LoadBalanceGroup string
+	Filters          []string // Filter values for narrowing delivery to specific entities
 }
 
 // EmitOptions configures a message publish.
 type EmitOptions struct {
 	QoS    *QoS
 	Retain bool
-	Echo   *bool // Whether to receive this message back if subscribed (default: true)
+	Echo   *bool  // Whether to receive this message back if subscribed (default: true)
+	Filter string // Filter value to target specific subscribers
 }
 
 // MessageMeta contains metadata about a received message.
@@ -99,6 +101,7 @@ type MessageMeta struct {
 	Timestamp time.Time
 	IsReplay  bool   // Whether this message is being replayed from history
 	MsgID     string // Unique message ID for ACK
+	Filter    string // Filter value this message was published with (if any)
 }
 
 // ActorPresence represents presence information for an actor.
@@ -146,6 +149,8 @@ type protocolMessage struct {
 	Echo             *bool          `msgpack:"echo,omitempty"`
 	LoadBalance      bool           `msgpack:"loadBalance,omitempty"`
 	LoadBalanceGroup string         `msgpack:"loadBalanceGroup,omitempty"`
+	Filters          []string       `msgpack:"filters,omitempty"`
+	Filter           string         `msgpack:"filter,omitempty"`
 	Reconnect        bool           `msgpack:"reconnect,omitempty"`
 	Options          map[string]any `msgpack:"options,omitempty"`
 	Error            string         `msgpack:"error,omitempty"`
