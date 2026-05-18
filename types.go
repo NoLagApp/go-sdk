@@ -112,6 +112,20 @@ type ActorPresence struct {
 	JoinedAt     time.Time
 }
 
+// LobbyPresenceState maps roomId -> actorId -> presenceData.
+type LobbyPresenceState map[string]map[string]map[string]any
+
+// LobbyPresenceEvent represents a presence event observed via a lobby.
+type LobbyPresenceEvent struct {
+	LobbyID string
+	RoomID  string
+	ActorID string
+	Data    map[string]any
+}
+
+// LobbyPresenceHandler is called when a lobby presence event is received.
+type LobbyPresenceHandler func(event LobbyPresenceEvent)
+
 // MessageHandler is called when a message is received on a subscribed topic.
 type MessageHandler func(data any, meta MessageMeta)
 
@@ -132,9 +146,15 @@ const (
 	msgTypePubAck    messageType = "pub_ack"
 	msgTypeMessage   messageType = "message"
 	msgTypePresence  messageType = "presence"
-	msgTypePresGet   messageType = "presence_get"
-	msgTypePresSet   messageType = "presence_set"
-	msgTypeError     messageType = "error"
+	msgTypePresGet            messageType = "presence_get"
+	msgTypePresSet            messageType = "presence_set"
+	msgTypeError              messageType = "error"
+	msgTypeLobbySubscribe     messageType = "lobbySubscribe"
+	msgTypeLobbySubscribed    messageType = "lobbySubscribed"
+	msgTypeLobbyUnsubscribe   messageType = "lobbyUnsubscribe"
+	msgTypeLobbyPresence      messageType = "lobbyPresence"
+	msgTypeGetLobbyPresence   messageType = "getLobbyPresence"
+	msgTypeLobbyPresenceList  messageType = "lobbyPresenceList"
 )
 
 // Internal message structure
@@ -160,6 +180,12 @@ type protocolMessage struct {
 	// Auth response fields
 	Success      bool   `msgpack:"success,omitempty"`
 	ActorTokenId string `msgpack:"actorTokenId,omitempty"`
+	// Lobby fields
+	LobbyID  string `msgpack:"lobbyId,omitempty"`
+	RoomID   string `msgpack:"roomId,omitempty"`
+	ActorID  string `msgpack:"actorId,omitempty"`
+	Event    string `msgpack:"event,omitempty"`
+	Presence any    `msgpack:"presence,omitempty"`
 }
 
 type messageMeta struct {

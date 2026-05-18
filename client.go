@@ -681,6 +681,44 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 	case msgTypePresence:
 		c.emit("presence", msg.Topic, msg.Data)
 
+	case msgTypeLobbySubscribed:
+		ackKey := fmt.Sprintf("lobbySubscribed:%s", msg.LobbyID)
+		c.mu.RLock()
+		ackChan, ok := c.pendingAcks[ackKey]
+		c.mu.RUnlock()
+		if ok {
+			select {
+			case ackChan <- msg:
+			default:
+			}
+		}
+
+	case msgTypeLobbyPresenceList:
+		ackKey := fmt.Sprintf("lobbyPresenceList:%s", msg.LobbyID)
+		c.mu.RLock()
+		ackChan, ok := c.pendingAcks[ackKey]
+		c.mu.RUnlock()
+		if ok {
+			select {
+			case ackChan <- msg:
+			default:
+			}
+		}
+
+	case msgTypeLobbyPresence:
+		presenceData := make(map[string]any)
+		if m, ok := msg.Data.(map[string]any); ok {
+			presenceData = m
+		}
+		event := LobbyPresenceEvent{
+			LobbyID: msg.LobbyID,
+			RoomID:  msg.RoomID,
+			ActorID: msg.ActorID,
+			Data:    presenceData,
+		}
+		c.emit(fmt.Sprintf("lobby:%s:presence:%s", msg.LobbyID, msg.Event), event)
+		c.emit(fmt.Sprintf("lobbyPresence:%s", msg.Event), event)
+
 	case msgTypeError:
 		c.emit("error", errors.New(msg.Error))
 	}
@@ -821,6 +859,11 @@ func (a *App) SetRoom(room string) *Room {
 	return &Room{client: a.client, app: a.app, room: room}
 }
 
+// SetLobby creates a Lobby context for observing presence across rooms.
+func (a *App) SetLobby(lobbyID string) *Lobby {
+	return &Lobby{client: a.client, lobbyID: lobbyID}
+}
+
 // Room provides a scoped context for pub/sub within an app/room.
 // Topics are automatically prefixed with "app/room/".
 type Room struct {
@@ -876,4 +919,155 @@ func (r *Room) On(topic string, handler EventHandler) {
 // Off removes all handlers for an event (auto-prefixed with app/room).
 func (r *Room) Off(topic string) {
 	r.client.Off(r.fullTopic(topic))
+}
+
+// Lobby provides a scoped context for observing presence across rooms.
+// Lobbies are read-only - you can only observe presence, not publish to them.
+type Lobby struct {
+	client  *Client
+	lobbyID string
+}
+
+// LobbyID returns the lobby identifier.
+func (l *Lobby) LobbyID() string {
+	return l.lobbyID
+}
+
+// Subscribe subscribes to this lobby's presence events.
+// Returns a snapshot of current presence when subscription completes.
+func (l *Lobby) Subscribe() (LobbyPresenceState, error) {
+	l.client.mu.RLock()
+	if l.client.status != StatusConnected {
+		l.client.mu.RUnlock()
+		return nil, ErrNotConnected
+	}
+	l.client.mu.RUnlock()
+
+	ackKey := fmt.Sprintf("lobbySubscribed:%s", l.lobbyID)
+	ackChan := make(chan *protocolMessage, 1)
+
+	l.client.mu.Lock()
+	l.client.pendingAcks[ackKey] = ackChan
+	l.client.mu.Unlock()
+
+	defer func() {
+		l.client.mu.Lock()
+		delete(l.client.pendingAcks, ackKey)
+		l.client.mu.Unlock()
+	}()
+
+	msg := &protocolMessage{
+		Type:    msgTypeLobbySubscribe,
+		LobbyID: l.lobbyID,
+	}
+	if err := l.client.send(msg); err != nil {
+		return nil, fmt.Errorf("lobby subscribe failed: %w", err)
+	}
+
+	select {
+	case resp := <-ackChan:
+		return parseLobbyPresence(resp.Presence), nil
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("lobby subscribe: %w", ErrTimeout)
+	case <-l.client.done:
+		return nil, ErrNotConnected
+	}
+}
+
+// Unsubscribe unsubscribes from this lobby's presence events (fire-and-forget).
+func (l *Lobby) Unsubscribe() error {
+	l.client.mu.RLock()
+	if l.client.status != StatusConnected {
+		l.client.mu.RUnlock()
+		return ErrNotConnected
+	}
+	l.client.mu.RUnlock()
+
+	return l.client.send(&protocolMessage{
+		Type:    msgTypeLobbyUnsubscribe,
+		LobbyID: l.lobbyID,
+	})
+}
+
+// FetchPresence fetches the current presence state for the lobby.
+func (l *Lobby) FetchPresence() (LobbyPresenceState, error) {
+	l.client.mu.RLock()
+	if l.client.status != StatusConnected {
+		l.client.mu.RUnlock()
+		return nil, ErrNotConnected
+	}
+	l.client.mu.RUnlock()
+
+	ackKey := fmt.Sprintf("lobbyPresenceList:%s", l.lobbyID)
+	ackChan := make(chan *protocolMessage, 1)
+
+	l.client.mu.Lock()
+	l.client.pendingAcks[ackKey] = ackChan
+	l.client.mu.Unlock()
+
+	defer func() {
+		l.client.mu.Lock()
+		delete(l.client.pendingAcks, ackKey)
+		l.client.mu.Unlock()
+	}()
+
+	msg := &protocolMessage{
+		Type:    msgTypeGetLobbyPresence,
+		LobbyID: l.lobbyID,
+	}
+	if err := l.client.send(msg); err != nil {
+		return nil, fmt.Errorf("fetch lobby presence failed: %w", err)
+	}
+
+	select {
+	case resp := <-ackChan:
+		return parseLobbyPresence(resp.Presence), nil
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("fetch lobby presence: %w", ErrTimeout)
+	case <-l.client.done:
+		return nil, ErrNotConnected
+	}
+}
+
+// On registers a handler for presence events in this lobby (e.g., "presence:join").
+func (l *Lobby) On(event string, handler LobbyPresenceHandler) {
+	eventType := event
+	if len(event) > 9 && event[:9] == "presence:" {
+		eventType = event[9:]
+	}
+	eventKey := fmt.Sprintf("lobby:%s:presence:%s", l.lobbyID, eventType)
+	l.client.On(eventKey, func(args ...any) {
+		if len(args) > 0 {
+			if e, ok := args[0].(LobbyPresenceEvent); ok {
+				handler(e)
+			}
+		}
+	})
+}
+
+// Off removes all handlers for a presence event in this lobby.
+func (l *Lobby) Off(event string) {
+	eventType := event
+	if len(event) > 9 && event[:9] == "presence:" {
+		eventType = event[9:]
+	}
+	eventKey := fmt.Sprintf("lobby:%s:presence:%s", l.lobbyID, eventType)
+	l.client.Off(eventKey)
+}
+
+func parseLobbyPresence(data any) LobbyPresenceState {
+	result := make(LobbyPresenceState)
+	if m, ok := data.(map[string]any); ok {
+		for roomID, roomData := range m {
+			if roomMap, ok := roomData.(map[string]any); ok {
+				result[roomID] = make(map[string]map[string]any)
+				for actorID, actorData := range roomMap {
+					if actorMap, ok := actorData.(map[string]any); ok {
+						result[roomID][actorID] = actorMap
+					}
+				}
+			}
+		}
+	}
+	return result
 }
