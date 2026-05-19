@@ -84,15 +84,16 @@ type SubscribeOptions struct {
 	QoS              *QoS
 	LoadBalance      *bool
 	LoadBalanceGroup string
-	Filters          []string // Filter values for narrowing delivery to specific entities
+	Filters          []any // Filter values: string items for OR, []string items for AND groups
 }
 
 // EmitOptions configures a message publish.
 type EmitOptions struct {
-	QoS    *QoS
-	Retain bool
-	Echo   *bool  // Whether to receive this message back if subscribed (default: true)
-	Filter string // Filter value to target specific subscribers
+	QoS     *QoS
+	Retain  bool
+	Echo    *bool    // Whether to receive this message back if subscribed (default: true)
+	Filter  string   // Filter value to target specific subscribers
+	Filters []string // AND composite publish (sorted, lowercased, joined with | server-side)
 }
 
 // MessageMeta contains metadata about a received message.
@@ -169,7 +170,7 @@ type protocolMessage struct {
 	Echo             *bool          `msgpack:"echo,omitempty"`
 	LoadBalance      bool           `msgpack:"loadBalance,omitempty"`
 	LoadBalanceGroup string         `msgpack:"loadBalanceGroup,omitempty"`
-	Filters          []string       `msgpack:"filters,omitempty"`
+	Filters          any            `msgpack:"filters,omitempty"`
 	Filter           string         `msgpack:"filter,omitempty"`
 	Reconnect        bool           `msgpack:"reconnect,omitempty"`
 	Options          map[string]any `msgpack:"options,omitempty"`

@@ -29,7 +29,7 @@ type Client struct {
 	authenticated  bool
 	actorID        string
 	subscriptions  map[string]MessageHandler
-	topicFilters   map[string][]string
+	topicFilters   map[string][]any
 	eventHandlers  map[string][]EventHandler
 	pendingAcks    map[string]chan *protocolMessage
 	messageID      int
@@ -53,7 +53,7 @@ func New(token string, opts ...Options) *Client {
 		options:       options,
 		status:        StatusDisconnected,
 		subscriptions: make(map[string]MessageHandler),
-		topicFilters:  make(map[string][]string),
+		topicFilters:  make(map[string][]any),
 		eventHandlers: make(map[string][]EventHandler),
 		pendingAcks:   make(map[string]chan *protocolMessage),
 	}
@@ -325,7 +325,8 @@ func (c *Client) Unsubscribe(topic string) error {
 
 // SetFilters replaces all filters for a topic.
 // Empty slice switches back to wildcard (receive all messages).
-func (c *Client) SetFilters(topic string, filters []string) error {
+// Accepts mixed items: string for OR, []string for AND groups.
+func (c *Client) SetFilters(topic string, filters []any) error {
 	c.mu.RLock()
 	if c.status != StatusConnected {
 		c.mu.RUnlock()
@@ -354,29 +355,38 @@ func (c *Client) SetFilters(topic string, filters []string) error {
 	return nil
 }
 
-// AddFilters adds filters to the existing set for a topic.
+// AddFilters adds simple string filters to the existing set for a topic.
+// AND groups in the existing set are preserved.
 func (c *Client) AddFilters(topic string, filters []string) error {
 	c.mu.RLock()
 	existing := c.topicFilters[topic]
 	c.mu.RUnlock()
 
-	merged := make(map[string]bool)
-	for _, f := range existing {
-		merged[f] = true
+	simpleSet := make(map[string]bool)
+	var andGroups []any
+	for _, item := range existing {
+		switch v := item.(type) {
+		case string:
+			simpleSet[v] = true
+		default:
+			andGroups = append(andGroups, v)
+		}
 	}
 	for _, f := range filters {
-		merged[f] = true
+		simpleSet[f] = true
 	}
 
-	result := make([]string, 0, len(merged))
-	for f := range merged {
+	result := make([]any, 0, len(simpleSet)+len(andGroups))
+	for f := range simpleSet {
 		result = append(result, f)
 	}
+	result = append(result, andGroups...)
 
 	return c.SetFilters(topic, result)
 }
 
-// RemoveFilters removes specific filters from a topic.
+// RemoveFilters removes specific simple string filters from a topic.
+// AND groups in the existing set are preserved.
 func (c *Client) RemoveFilters(topic string, filters []string) error {
 	c.mu.RLock()
 	existing := c.topicFilters[topic]
@@ -387,10 +397,16 @@ func (c *Client) RemoveFilters(topic string, filters []string) error {
 		remove[f] = true
 	}
 
-	result := make([]string, 0)
-	for _, f := range existing {
-		if !remove[f] {
-			result = append(result, f)
+	result := make([]any, 0)
+	for _, item := range existing {
+		switch v := item.(type) {
+		case string:
+			if !remove[v] {
+				result = append(result, v)
+			}
+		default:
+			// Preserve AND groups
+			result = append(result, item)
 		}
 	}
 
@@ -419,6 +435,8 @@ func (c *Client) Emit(topic string, data any, opts ...EmitOptions) error {
 		msg.Echo = opt.Echo
 		if opt.Filter != "" {
 			msg.Filter = opt.Filter
+		} else if len(opt.Filters) > 0 {
+			msg.Filters = opt.Filters
 		}
 	}
 
@@ -897,7 +915,7 @@ func (r *Room) Emit(topic string, data any, opts ...EmitOptions) error {
 }
 
 // SetFilters replaces all filters for a topic (auto-prefixed with app/room).
-func (r *Room) SetFilters(topic string, filters []string) error {
+func (r *Room) SetFilters(topic string, filters []any) error {
 	return r.client.SetFilters(r.fullTopic(topic), filters)
 }
 
