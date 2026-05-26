@@ -28,6 +28,8 @@ type Client struct {
 	status         ConnectionStatus
 	authenticated  bool
 	actorID        string
+	projectID      string
+	actorType      ActorType
 	subscriptions  map[string]MessageHandler
 	topicFilters   map[string][]any
 	eventHandlers  map[string][]EventHandler
@@ -178,8 +180,12 @@ func (c *Client) authenticate() error {
 		if !resp.Success {
 			return fmt.Errorf("%w: server returned success=false", ErrAuthFailed)
 		}
-		// Extract actor ID from response
+		// Extract actor info from response
 		c.actorID = resp.ActorTokenId
+		c.projectID = resp.ProjectID
+		if resp.ActorTypeStr != "" {
+			c.actorType = ActorType(resp.ActorTypeStr)
+		}
 		return nil
 	case <-time.After(10 * time.Second):
 		return fmt.Errorf("auth failed: %w", ErrTimeout)
@@ -236,6 +242,20 @@ func (c *Client) ActorID() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.actorID
+}
+
+// ProjectID returns the project ID from the auth response.
+func (c *Client) ProjectID() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.projectID
+}
+
+// ActorTypeValue returns the actor type from the auth response.
+func (c *Client) ActorTypeValue() ActorType {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.actorType
 }
 
 // Subscribe registers a handler for messages on the given topic.
@@ -444,8 +464,8 @@ func (c *Client) Emit(topic string, data any, opts ...EmitOptions) error {
 	return c.send(msg)
 }
 
-// SetPresence sets the presence data for this client.
-func (c *Client) SetPresence(data map[string]any) error {
+// SetPresence sets the presence data for this client, optionally scoped to a room.
+func (c *Client) SetPresence(data map[string]any, roomID ...string) error {
 	c.mu.RLock()
 	if c.status != StatusConnected {
 		c.mu.RUnlock()
@@ -457,12 +477,15 @@ func (c *Client) SetPresence(data map[string]any) error {
 		Type: msgTypePresSet,
 		Data: data,
 	}
+	if len(roomID) > 0 && roomID[0] != "" {
+		msg.RoomID = roomID[0]
+	}
 
 	return c.send(msg)
 }
 
-// GetPresence retrieves presence information for all actors in a topic.
-func (c *Client) GetPresence(topic string) ([]ActorPresence, error) {
+// GetPresence retrieves presence information for all actors, optionally for a specific room.
+func (c *Client) GetPresence(roomID ...string) ([]ActorPresence, error) {
 	c.mu.RLock()
 	if c.status != StatusConnected {
 		c.mu.RUnlock()
@@ -471,41 +494,52 @@ func (c *Client) GetPresence(topic string) ([]ActorPresence, error) {
 	c.mu.RUnlock()
 
 	msg := &protocolMessage{
-		Type:  msgTypePresGet,
-		Topic: topic,
+		Type: msgTypePresGet,
+	}
+	if len(roomID) > 0 && roomID[0] != "" {
+		msg.RoomID = roomID[0]
 	}
 
-	resp, err := c.sendAndWait(msg, msgTypePresence, 10*time.Second)
-	if err != nil {
+	ackChan := make(chan *protocolMessage, 1)
+	c.mu.Lock()
+	c.pendingAcks["__presenceList__"] = ackChan
+	c.mu.Unlock()
+
+	defer func() {
+		c.mu.Lock()
+		delete(c.pendingAcks, "__presenceList__")
+		c.mu.Unlock()
+	}()
+
+	if err := c.send(msg); err != nil {
 		return nil, fmt.Errorf("get presence failed: %w", err)
 	}
 
-	// Parse presence data from response
-	var result []ActorPresence
-	if data, ok := resp.Data.([]any); ok {
-		for _, item := range data {
-			if m, ok := item.(map[string]any); ok {
-				presence := ActorPresence{
-					Presence: make(map[string]any),
+	select {
+	case resp := <-ackChan:
+		var result []ActorPresence
+		if data, ok := resp.Data.([]any); ok {
+			for _, item := range data {
+				if m, ok := item.(map[string]any); ok {
+					presence := ActorPresence{
+						Presence: make(map[string]any),
+					}
+					if id, ok := m["actorTokenId"].(string); ok {
+						presence.ActorTokenID = id
+					}
+					if p, ok := m["presence"].(map[string]any); ok {
+						presence.Presence = p
+					}
+					result = append(result, presence)
 				}
-				if id, ok := m["actor_token_id"].(string); ok {
-					presence.ActorTokenID = id
-				}
-				if at, ok := m["actor_type"].(string); ok {
-					presence.ActorType = ActorType(at)
-				}
-				if p, ok := m["presence"].(map[string]any); ok {
-					presence.Presence = p
-				}
-				if ts, ok := m["joined_at"].(float64); ok {
-					presence.JoinedAt = time.Unix(int64(ts), 0)
-				}
-				result = append(result, presence)
 			}
 		}
+		return result, nil
+	case <-time.After(10 * time.Second):
+		return nil, fmt.Errorf("get presence: %w", ErrTimeout)
+	case <-c.done:
+		return nil, ErrNotConnected
 	}
-
-	return result, nil
 }
 
 // On registers an event handler.
@@ -697,7 +731,35 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 		}
 
 	case msgTypePresence:
-		c.emit("presence", msg.Topic, msg.Data)
+		// Broker sends: {type: "presence", event: "join"/"leave"/"update", data: {...}}
+		if msg.Event != "" {
+			eventData, _ := msg.Data.(map[string]any)
+			if eventData == nil {
+				eventData = make(map[string]any)
+			}
+			actorTokenID, _ := eventData["actor_token_id"].(string)
+			presenceData, _ := eventData["presence"].(map[string]any)
+			actor := ActorPresence{
+				ActorTokenID: actorTokenID,
+				Presence:     presenceData,
+			}
+			c.emit(fmt.Sprintf("presence:%s", msg.Event), actor)
+		} else {
+			c.emit("presence", msg.Topic, msg.Data)
+		}
+
+	case "presenceList":
+		// Handle presenceList response
+		ackKey := "__presenceList__"
+		c.mu.RLock()
+		ackChan, ok := c.pendingAcks[ackKey]
+		c.mu.RUnlock()
+		if ok {
+			select {
+			case ackChan <- msg:
+			default:
+			}
+		}
 
 	case msgTypeLobbySubscribed:
 		ackKey := fmt.Sprintf("lobbySubscribed:%s", msg.LobbyID)
@@ -927,6 +989,11 @@ func (r *Room) AddFilters(topic string, filters []string) error {
 // RemoveFilters removes specific filters from a topic (auto-prefixed with app/room).
 func (r *Room) RemoveFilters(topic string, filters []string) error {
 	return r.client.RemoveFilters(r.fullTopic(topic), filters)
+}
+
+// SetPresence sets the presence data scoped to this room.
+func (r *Room) SetPresence(data map[string]any) error {
+	return r.client.SetPresence(data, r.room)
 }
 
 // On registers an event handler for the given topic (auto-prefixed with app/room).

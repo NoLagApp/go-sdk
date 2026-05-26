@@ -147,8 +147,8 @@ const (
 	msgTypePubAck    messageType = "pub_ack"
 	msgTypeMessage   messageType = "message"
 	msgTypePresence  messageType = "presence"
-	msgTypePresGet            messageType = "presence_get"
-	msgTypePresSet            messageType = "presence_set"
+	msgTypePresGet            messageType = "getPresence"
+	msgTypePresSet            messageType = "presence"
 	msgTypeError              messageType = "error"
 	msgTypeLobbySubscribe     messageType = "lobbySubscribe"
 	msgTypeLobbySubscribed    messageType = "lobbySubscribed"
@@ -181,6 +181,8 @@ type protocolMessage struct {
 	// Auth response fields
 	Success      bool   `msgpack:"success,omitempty"`
 	ActorTokenId string `msgpack:"actorTokenId,omitempty"`
+	ProjectID    string `msgpack:"projectId,omitempty"`
+	ActorTypeStr string `msgpack:"actorType,omitempty"`
 	// Lobby fields
 	LobbyID  string `msgpack:"lobbyId,omitempty"`
 	RoomID   string `msgpack:"roomId,omitempty"`
