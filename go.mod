@@ -1,4 +1,4 @@
-module github.com/NoLagApp/nolag-go
+module github.com/NoLagApp/go-sdk
 
 go 1.21
 
