@@ -69,6 +69,7 @@ type API struct {
 	Apps   *AppsAPI
 	Rooms  *RoomsAPI
 	Actors *ActorsAPI
+	Scopes *ScopesAPI
 }
 
 // NewAPI creates a new NoLag API client.
@@ -113,6 +114,7 @@ func NewAPI(apiKey string, opts ...APIOptions) *API {
 	api.Apps = &AppsAPI{api: api}
 	api.Rooms = &RoomsAPI{api: api}
 	api.Actors = &ActorsAPI{api: api}
+	api.Scopes = &ScopesAPI{api: api}
 
 	return api
 }
@@ -256,6 +258,7 @@ type ActorResource struct {
 	ExternalID      string         `json:"externalId,omitempty"`
 	Metadata        map[string]any `json:"metadata,omitempty"`
 	IsActive        bool           `json:"isActive"`
+	AccessScopeID   *string        `json:"accessScopeId,omitempty"`
 	LastConnectedAt string         `json:"lastConnectedAt,omitempty"`
 	CreatedAt       string         `json:"createdAt,omitempty"`
 	UpdatedAt       string         `json:"updatedAt,omitempty"`
@@ -278,9 +281,39 @@ type ActorCreate struct {
 
 // ActorUpdate is the request to update an actor.
 type ActorUpdate struct {
+	Name          *string        `json:"name,omitempty"`
+	Description   *string        `json:"description,omitempty"`
+	ExternalID    *string        `json:"externalId,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+	IsActive      *bool          `json:"isActive,omitempty"`
+	AccessScopeID *string        `json:"accessScopeId,omitempty"`
+}
+
+// ScopeResource represents an access scope resource.
+type ScopeResource struct {
+	AccessScopeID string         `json:"accessScopeId"`
+	ProjectID     string         `json:"projectId"`
+	Slug          string         `json:"slug"`
+	Name          string         `json:"name"`
+	Description   *string        `json:"description,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+	IsActive      bool           `json:"isActive"`
+	CreatedAt     string         `json:"createdAt,omitempty"`
+	UpdatedAt     string         `json:"updatedAt,omitempty"`
+}
+
+// ScopeCreate is the request to create an access scope.
+type ScopeCreate struct {
+	Slug        string         `json:"slug"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+}
+
+// ScopeUpdate is the request to update an access scope.
+type ScopeUpdate struct {
 	Name        *string        `json:"name,omitempty"`
 	Description *string        `json:"description,omitempty"`
-	ExternalID  *string        `json:"externalId,omitempty"`
 	Metadata    map[string]any `json:"metadata,omitempty"`
 	IsActive    *bool          `json:"isActive,omitempty"`
 }
@@ -482,4 +515,77 @@ func (a *ActorsAPI) Update(ctx context.Context, actorID string, data ActorUpdate
 // Delete deletes an actor.
 func (a *ActorsAPI) Delete(ctx context.Context, actorID string) error {
 	return a.api.request(ctx, "DELETE", "/actors/"+actorID, nil, nil)
+}
+
+// ============ Scopes API ============
+
+// ScopesAPI handles access scope management.
+type ScopesAPI struct {
+	api *API
+}
+
+// List returns all access scopes in the project.
+func (s *ScopesAPI) List(ctx context.Context) ([]ScopeResource, error) {
+	var result []ScopeResource
+	if err := s.api.request(ctx, "GET", "/scopes", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// Get returns an access scope by ID.
+func (s *ScopesAPI) Get(ctx context.Context, scopeID string) (*ScopeResource, error) {
+	var result ScopeResource
+	if err := s.api.request(ctx, "GET", "/scopes/"+scopeID, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Create creates a new access scope.
+func (s *ScopesAPI) Create(ctx context.Context, data ScopeCreate) (*ScopeResource, error) {
+	var result ScopeResource
+	if err := s.api.request(ctx, "POST", "/scopes", data, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Update updates an access scope.
+func (s *ScopesAPI) Update(ctx context.Context, scopeID string, data ScopeUpdate) (*ScopeResource, error) {
+	var result ScopeResource
+	if err := s.api.request(ctx, "PATCH", "/scopes/"+scopeID, data, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Delete deletes an access scope.
+func (s *ScopesAPI) Delete(ctx context.Context, scopeID string) error {
+	return s.api.request(ctx, "DELETE", "/scopes/"+scopeID, nil, nil)
+}
+
+// ListActors returns all actors assigned to an access scope.
+func (s *ScopesAPI) ListActors(ctx context.Context, scopeID string) ([]ActorResource, error) {
+	var result []ActorResource
+	if err := s.api.request(ctx, "GET", "/scopes/"+scopeID+"/actors", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// AddActor assigns an actor to this scope.
+func (s *ScopesAPI) AddActor(ctx context.Context, scopeID, actorID string) (*ActorResource, error) {
+	return s.api.Actors.Update(ctx, actorID, ActorUpdate{AccessScopeID: &scopeID})
+}
+
+// RemoveActor removes an actor from its scope (unscopes it).
+// Sends {"accessScopeId": null} to the API.
+func (s *ScopesAPI) RemoveActor(ctx context.Context, actorID string) (*ActorResource, error) {
+	var result ActorResource
+	body := map[string]any{"accessScopeId": nil}
+	if err := s.api.request(ctx, "PATCH", "/actors/"+actorID, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
