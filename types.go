@@ -111,6 +111,12 @@ type ActorPresence struct {
 	ActorType    ActorType
 	Presence     map[string]any
 	JoinedAt     time.Time
+	// Status is the Persistent Presence lifecycle of a persistent actor's
+	// durable record: "online" (connected), "offline" (registered but
+	// disconnected, still discoverable + wakeable), or "waking" (a wake
+	// webhook was fired). Empty for ordinary ephemeral actors.
+	Status               string
+	AdvertisementVersion int
 }
 
 // LobbyPresenceState maps roomId -> actorId -> presenceData.

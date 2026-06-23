@@ -530,6 +530,10 @@ func (c *Client) GetPresence(roomID ...string) ([]ActorPresence, error) {
 					if p, ok := m["presence"].(map[string]any); ok {
 						presence.Presence = p
 					}
+					// Persistent Presence: status (online|offline|waking)
+					if s, ok := m["status"].(string); ok {
+						presence.Status = s
+					}
 					result = append(result, presence)
 				}
 			}
@@ -742,6 +746,11 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 			actor := ActorPresence{
 				ActorTokenID: actorTokenID,
 				Presence:     presenceData,
+			}
+			// Persistent Presence: status (online|offline|waking). The event
+			// name itself carries "waking" (emitted as presence:waking).
+			if s, ok := eventData["status"].(string); ok {
+				actor.Status = s
 			}
 			c.emit(fmt.Sprintf("presence:%s", msg.Event), actor)
 		} else {
