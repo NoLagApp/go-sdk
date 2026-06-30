@@ -248,6 +248,46 @@ type RoomUpdate struct {
 	Config      map[string]any `json:"config,omitempty"`
 }
 
+// AccessPermission is a room/topic access permission.
+type AccessPermission string
+
+const (
+	PermissionSubscribe AccessPermission = "subscribe"
+	PermissionPublish   AccessPermission = "publish"
+	PermissionPubSub    AccessPermission = "pubSub"
+)
+
+// RoomActorAccess represents a room-level ACL grant. A room becomes private once
+// it has at least one grant; the broker then only admits actors with an
+// explicit, unexpired grant.
+type RoomActorAccess struct {
+	RoomActorAccessID string           `json:"roomActorAccessId"`
+	RoomID            string           `json:"roomId"`
+	ActorTokenID      string           `json:"actorTokenId,omitempty"`
+	ActorType         string           `json:"actorType,omitempty"`
+	Permission        AccessPermission `json:"permission"`
+	Topics            []string         `json:"topics,omitempty"`
+	IsActive          bool             `json:"isActive"`
+	ExpiresAt         string           `json:"expiresAt,omitempty"`
+	Role              string           `json:"role,omitempty"`
+	Metadata          map[string]any   `json:"metadata,omitempty"`
+	CreatedAt         string           `json:"createdAt,omitempty"`
+	UpdatedAt         string           `json:"updatedAt,omitempty"`
+}
+
+// RoomActorAccessCreate grants an actor access to a room.
+// Provide ActorTokenID (a token in this project) or ActorType (a type label).
+type RoomActorAccessCreate struct {
+	ActorTokenID string           `json:"actorTokenId,omitempty"`
+	ActorType    string           `json:"actorType,omitempty"`
+	Permission   AccessPermission `json:"permission"`
+	Topics       []string         `json:"topics,omitempty"`
+	IsActive     *bool            `json:"isActive,omitempty"`
+	ExpiresAt    string           `json:"expiresAt,omitempty"`
+	Role         string           `json:"role,omitempty"`
+	Metadata     map[string]any   `json:"metadata,omitempty"`
+}
+
 // ActorResource represents an actor resource.
 type ActorResource struct {
 	ActorTokenID    string         `json:"actorTokenId"`
@@ -466,6 +506,35 @@ func (r *RoomsAPI) Update(ctx context.Context, appID, roomID string, data RoomUp
 // Delete deletes a dynamic room (static rooms cannot be deleted).
 func (r *RoomsAPI) Delete(ctx context.Context, appID, roomID string) error {
 	return r.api.request(ctx, "DELETE", "/apps/"+appID+"/rooms/"+roomID, nil, nil)
+}
+
+// GrantActor grants an actor access to a room (room-level ACL).
+//
+// The first grant makes the room private — after that the broker only admits
+// actors with an explicit, unexpired grant. Provide ActorTokenID (a token in
+// this project) or ActorType (a type label). Use this to make a room (e.g. a
+// per-user notification bell) genuinely private.
+func (r *RoomsAPI) GrantActor(ctx context.Context, appID, roomID string, data RoomActorAccessCreate) (*RoomActorAccess, error) {
+	var result RoomActorAccess
+	if err := r.api.request(ctx, "POST", "/apps/"+appID+"/rooms/"+roomID+"/actors", data, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// ListActors lists a room's actor grants.
+func (r *RoomsAPI) ListActors(ctx context.Context, appID, roomID string) ([]RoomActorAccess, error) {
+	var result []RoomActorAccess
+	if err := r.api.request(ctx, "GET", "/apps/"+appID+"/rooms/"+roomID+"/actors", nil, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// RevokeActor revokes an actor's room access. Removing the last grant makes the
+// room public again.
+func (r *RoomsAPI) RevokeActor(ctx context.Context, appID, roomID, roomActorAccessID string) error {
+	return r.api.request(ctx, "DELETE", "/apps/"+appID+"/rooms/"+roomID+"/actors/"+roomActorAccessID, nil, nil)
 }
 
 // ============ Actors API ============
