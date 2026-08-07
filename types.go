@@ -3,6 +3,17 @@ package nolag
 
 import "time"
 
+// ProtocolVersion is the wire protocol version this SDK requests from the broker.
+//
+// Version 2 enables structured error frames (see ServerError, which carry an error
+// code and a remediation hint), publish acknowledgements, and auto-provisioned
+// rooms. A client that does not request a version is treated as version 1 and
+// receives only legacy bare error names.
+//
+// The broker negotiates min(client, server) and echoes the result, readable via
+// Client.ProtocolVersion after Connect returns.
+const ProtocolVersion = 2
+
 // ConnectionStatus represents the current connection state.
 type ConnectionStatus string
 
@@ -17,10 +28,17 @@ const (
 type ActorType string
 
 const (
-	ActorDevice  ActorType = "device"
-	ActorUser    ActorType = "user"
-	ActorServer  ActorType = "server"
-	ActorSession ActorType = "session"
+	ActorDevice       ActorType = "device"       // Browser, mobile app, IoT device
+	ActorUser         ActorType = "user"         // Authenticated user connection
+	ActorService      ActorType = "service"      // Backend service, microservice
+	ActorSession      ActorType = "session"      // Short-lived or temporary connection
+	ActorAgent        ActorType = "agent"        // Autonomous LLM-powered connection
+	ActorOrchestrator ActorType = "orchestrator" // Dispatches work across agents
+	ActorObserver     ActorType = "observer"     // Read-only audit or monitoring
+
+	// Deprecated: "server" is not a value the platform accepts, so this constant
+	// never matched a real actor type. Use ActorService instead.
+	ActorServer ActorType = "server"
 )
 
 // QoS represents the quality of service level.
@@ -143,25 +161,25 @@ type EventHandler func(args ...any)
 type messageType string
 
 const (
-	msgTypeAuth      messageType = "auth"
-	msgTypeAuthAck   messageType = "auth_ack"
-	msgTypeSubscribe messageType = "subscribe"
-	msgTypeSubAck    messageType = "sub_ack"
-	msgTypeUnsub     messageType = "unsubscribe"
-	msgTypeUnsubAck  messageType = "unsub_ack"
-	msgTypePublish   messageType = "publish"
-	msgTypePubAck    messageType = "pub_ack"
-	msgTypeMessage   messageType = "message"
-	msgTypePresence  messageType = "presence"
-	msgTypePresGet            messageType = "getPresence"
-	msgTypePresSet            messageType = "presence"
-	msgTypeError              messageType = "error"
-	msgTypeLobbySubscribe     messageType = "lobbySubscribe"
-	msgTypeLobbySubscribed    messageType = "lobbySubscribed"
-	msgTypeLobbyUnsubscribe   messageType = "lobbyUnsubscribe"
-	msgTypeLobbyPresence      messageType = "lobbyPresence"
-	msgTypeGetLobbyPresence   messageType = "getLobbyPresence"
-	msgTypeLobbyPresenceList  messageType = "lobbyPresenceList"
+	msgTypeAuth              messageType = "auth"
+	msgTypeAuthAck           messageType = "auth_ack"
+	msgTypeSubscribe         messageType = "subscribe"
+	msgTypeSubAck            messageType = "sub_ack"
+	msgTypeUnsub             messageType = "unsubscribe"
+	msgTypeUnsubAck          messageType = "unsub_ack"
+	msgTypePublish           messageType = "publish"
+	msgTypePubAck            messageType = "pub_ack"
+	msgTypeMessage           messageType = "message"
+	msgTypePresence          messageType = "presence"
+	msgTypePresGet           messageType = "getPresence"
+	msgTypePresSet           messageType = "presence"
+	msgTypeError             messageType = "error"
+	msgTypeLobbySubscribe    messageType = "lobbySubscribe"
+	msgTypeLobbySubscribed   messageType = "lobbySubscribed"
+	msgTypeLobbyUnsubscribe  messageType = "lobbyUnsubscribe"
+	msgTypeLobbyPresence     messageType = "lobbyPresence"
+	msgTypeGetLobbyPresence  messageType = "getLobbyPresence"
+	msgTypeLobbyPresenceList messageType = "lobbyPresenceList"
 )
 
 // Internal message structure
@@ -181,9 +199,17 @@ type protocolMessage struct {
 	Reconnect        bool           `msgpack:"reconnect,omitempty"`
 	Options          map[string]any `msgpack:"options,omitempty"`
 	Error            string         `msgpack:"error,omitempty"`
-	Meta             *messageMeta   `msgpack:"meta,omitempty"`
-	IsReplay         bool           `msgpack:"isReplay,omitempty"`
-	MsgID            string         `msgpack:"msgId,omitempty"`
+	// Structured error frame fields (sent alongside Error and Topic on
+	// msgTypeError). See ServerError.
+	Code     int          `msgpack:"code,omitempty"`
+	Hint     string       `msgpack:"hint,omitempty"`
+	MsgRef   string       `msgpack:"msgRef,omitempty"`
+	Meta     *messageMeta `msgpack:"meta,omitempty"`
+	IsReplay bool         `msgpack:"isReplay,omitempty"`
+	MsgID    string       `msgpack:"msgId,omitempty"`
+	// Auth fields. ProtocolVersion is sent on the auth frame and echoed back by
+	// the broker with the negotiated value.
+	ProtocolVersion int `msgpack:"protocolVersion,omitempty"`
 	// Auth response fields
 	Success      bool   `msgpack:"success,omitempty"`
 	ActorTokenId string `msgpack:"actorTokenId,omitempty"`

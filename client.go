@@ -24,18 +24,19 @@ type Client struct {
 	token   string
 	options Options
 
-	conn           *websocket.Conn
-	status         ConnectionStatus
-	authenticated  bool
-	actorID        string
-	projectID      string
-	actorType      ActorType
-	subscriptions  map[string]MessageHandler
-	topicFilters   map[string][]any
-	eventHandlers  map[string][]EventHandler
-	pendingAcks    map[string]chan *protocolMessage
-	messageID      int
-	reconnectCount int
+	conn            *websocket.Conn
+	status          ConnectionStatus
+	authenticated   bool
+	actorID         string
+	projectID       string
+	actorType       ActorType
+	subscriptions   map[string]MessageHandler
+	topicFilters    map[string][]any
+	eventHandlers   map[string][]EventHandler
+	pendingAcks     map[string]chan *protocolMessage
+	messageID       int
+	reconnectCount  int
+	protocolVersion int
 
 	mu            sync.RWMutex
 	writeMu       sync.Mutex
@@ -145,8 +146,9 @@ func (c *Client) Connect() error {
 
 func (c *Client) authenticate() error {
 	msg := &protocolMessage{
-		Type:  msgTypeAuth,
-		Token: c.token,
+		Type:            msgTypeAuth,
+		Token:           c.token,
+		ProtocolVersion: ProtocolVersion,
 	}
 
 	// Include reconnect flag if this is a reconnection attempt
@@ -180,12 +182,25 @@ func (c *Client) authenticate() error {
 		if !resp.Success {
 			return fmt.Errorf("%w: server returned success=false", ErrAuthFailed)
 		}
-		// Extract actor info from response
+		// Extract actor info from response. Guarded because readLoop is already
+		// running and the accessors read these under RLock.
+		c.mu.Lock()
 		c.actorID = resp.ActorTokenId
 		c.projectID = resp.ProjectID
 		if resp.ActorTypeStr != "" {
 			c.actorType = ActorType(resp.ActorTypeStr)
 		}
+		// The broker echoes the negotiated version, min(client, server). It is
+		// absent on brokers older than v2, which means version 1.
+		if resp.ProtocolVersion > 0 {
+			c.protocolVersion = resp.ProtocolVersion
+		} else {
+			c.protocolVersion = 1
+		}
+		negotiated := c.protocolVersion
+		c.mu.Unlock()
+
+		c.log("Protocol version negotiated:", negotiated)
 		return nil
 	case <-time.After(10 * time.Second):
 		return fmt.Errorf("auth failed: %w", ErrTimeout)
@@ -256,6 +271,18 @@ func (c *Client) ActorTypeValue() ActorType {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.actorType
+}
+
+// ProtocolVersion returns the wire protocol version negotiated with the broker,
+// min(ProtocolVersion, broker version). It is 0 before Connect succeeds.
+//
+// A negotiated version below 2 means the broker is older than this SDK and will
+// send only legacy error names, so ServerError.Code and ServerError.Hint will be
+// empty.
+func (c *Client) ProtocolVersion() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.protocolVersion
 }
 
 // Subscribe registers a handler for messages on the given topic.
@@ -561,6 +588,40 @@ func (c *Client) Off(event string) {
 	delete(c.eventHandlers, event)
 }
 
+// OnError registers a handler for errors reported by the broker.
+//
+// Subscribe and Emit are fire-and-forget and do not return broker-side failures,
+// so this is the only way to observe problems such as subscribing to a room that
+// does not exist or publishing to a topic the actor cannot write. Register it
+// before calling Connect:
+//
+//	client := nolag.New(token)
+//	client.OnError(func(err *nolag.ServerError) {
+//		log.Printf("nolag: %v", err)
+//	})
+//	if err := client.Connect(); err != nil { ... }
+//
+// This is a typed wrapper over On("error", ...). Handlers run on the read loop,
+// so do not block in them.
+func (c *Client) OnError(handler ErrorHandler) {
+	if handler == nil {
+		return
+	}
+	c.On("error", func(args ...any) {
+		if len(args) == 0 {
+			return
+		}
+		if serverErr, ok := args[0].(*ServerError); ok {
+			handler(serverErr)
+			return
+		}
+		// Defensive: surface any other error shape without dropping it.
+		if err, ok := args[0].(error); ok {
+			handler(&ServerError{Name: err.Error()})
+		}
+	})
+}
+
 func (c *Client) emit(event string, args ...any) {
 	c.mu.RLock()
 	handlers := c.eventHandlers[event]
@@ -809,7 +870,13 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 		c.emit(fmt.Sprintf("lobbyPresence:%s", msg.Event), event)
 
 	case msgTypeError:
-		c.emit("error", errors.New(msg.Error))
+		c.emit("error", &ServerError{
+			Code:   msg.Code,
+			Name:   msg.Error,
+			Topic:  msg.Topic,
+			Hint:   msg.Hint,
+			MsgRef: msg.MsgRef,
+		})
 	}
 }
 
