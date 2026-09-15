@@ -5,7 +5,7 @@ Real-time messaging SDK for Go applications.
 ## Installation
 
 ```bash
-go get github.com/NoLagApp/nolag-go
+go get github.com/NoLagApp/go-sdk
 ```
 
 ## Setup
@@ -28,7 +28,7 @@ import (
     "fmt"
     "time"
 
-    nolag "github.com/NoLagApp/nolag-go"
+    nolag "github.com/NoLagApp/go-sdk"
 )
 
 func main() {
@@ -59,15 +59,15 @@ func main() {
 ```go
 import (
     "time"
-    nolag "github.com/NoLagApp/nolag-go"
+    nolag "github.com/NoLagApp/go-sdk"
 )
 
 options := nolag.Options{
     URL:                  "wss://broker.nolag.app/ws", // Custom broker URL
-    Reconnect:            true,                         // Auto-reconnect
+    Reconnect:            nolag.Bool(true),             // Auto-reconnect (omit to keep the default)
     ReconnectInterval:    5 * time.Second,              // Reconnect interval
-    MaxReconnectAttempts: 10,                           // Max attempts (0 = infinite)
-    HeartbeatInterval:    30 * time.Second,             // Heartbeat interval (0 to disable)
+    MaxReconnectAttempts: 10,                           // Max attempts (-1 = unlimited)
+    HeartbeatInterval:    30 * time.Second,             // Heartbeat interval (-1 to disable)
     QoS:                  nolag.QoSAtLeastOnce,         // Default QoS
     Debug:                true,                         // Enable debug logging
 }
@@ -170,7 +170,7 @@ package main
 
 import (
     "fmt"
-    nolag "github.com/NoLagApp/nolag-go"
+    nolag "github.com/NoLagApp/go-sdk"
 )
 
 func main() {
@@ -231,7 +231,7 @@ client.Subscribe("tasks", processTask, nolag.SubscribeOptions{
 ## Type Definitions
 
 ```go
-import nolag "github.com/NoLagApp/nolag-go"
+import nolag "github.com/NoLagApp/go-sdk"
 
 // Main types
 nolag.Client           // The client
@@ -262,7 +262,7 @@ import (
     "context"
     "fmt"
 
-    nolag "github.com/NoLagApp/nolag-go"
+    nolag "github.com/NoLagApp/go-sdk"
 )
 
 func main() {
@@ -325,7 +325,7 @@ func main() {
 ### API Types
 
 ```go
-import nolag "github.com/NoLagApp/nolag-go"
+import nolag "github.com/NoLagApp/go-sdk"
 
 // API Client
 nolag.API             // REST API client

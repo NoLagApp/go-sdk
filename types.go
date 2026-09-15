@@ -55,16 +55,23 @@ type Options struct {
 	// URL is the WebSocket endpoint. Default: "wss://broker.nolag.app/ws"
 	URL string
 
-	// Reconnect enables automatic reconnection. Default: true
-	Reconnect bool
+	// Reconnect enables automatic reconnection. Default: true.
+	//
+	// A pointer so that an Options literal which does not mention it keeps the
+	// default. Before v0.5.0 this was a plain bool, and any Options{...} that
+	// omitted it silently disabled reconnection. Use nolag.Bool(false) to
+	// switch it off.
+	Reconnect *bool
 
 	// ReconnectInterval is the time between reconnect attempts. Default: 5s
 	ReconnectInterval time.Duration
 
-	// MaxReconnectAttempts is the max reconnection attempts (0 = infinite). Default: 10
+	// MaxReconnectAttempts is the max reconnection attempts. Default: 10.
+	// 0 means "not set" and keeps the default; -1 means unlimited.
 	MaxReconnectAttempts int
 
-	// HeartbeatInterval is the interval for heartbeat pings. Default: 30s, 0 to disable
+	// HeartbeatInterval is the interval for heartbeat pings. Default: 30s.
+	// 0 means "not set" and keeps the default; -1 disables heartbeats.
 	HeartbeatInterval time.Duration
 
 	// QoS is the default quality of service level. Default: QoSAtLeastOnce
@@ -83,11 +90,14 @@ type Options struct {
 	Debug bool
 }
 
+// Bool returns a pointer to b, for the pointer-typed Options fields.
+func Bool(b bool) *bool { return &b }
+
 // DefaultOptions returns options with sensible defaults.
 func DefaultOptions() Options {
 	return Options{
 		URL:                  "wss://broker.nolag.app/ws",
-		Reconnect:            true,
+		Reconnect:            Bool(true),
 		ReconnectInterval:    5 * time.Second,
 		MaxReconnectAttempts: 10,
 		HeartbeatInterval:    30 * time.Second,
@@ -180,6 +190,7 @@ const (
 	msgTypeLobbyPresence     messageType = "lobbyPresence"
 	msgTypeGetLobbyPresence  messageType = "getLobbyPresence"
 	msgTypeLobbyPresenceList messageType = "lobbyPresenceList"
+	msgTypeHydration         messageType = "hydration"
 )
 
 // Internal message structure

@@ -71,6 +71,9 @@ func mergeOptions(defaults, custom Options) Options {
 	}
 	if custom.MaxReconnectAttempts > 0 {
 		defaults.MaxReconnectAttempts = custom.MaxReconnectAttempts
+	} else if custom.MaxReconnectAttempts < 0 {
+		// Negative value means unlimited attempts; 0 keeps the default.
+		defaults.MaxReconnectAttempts = 0
 	}
 	// Only override heartbeat if explicitly set (> 0 means custom value, we keep default otherwise)
 	// A value of -1 can be used to explicitly disable heartbeats
@@ -81,7 +84,9 @@ func mergeOptions(defaults, custom Options) Options {
 		defaults.HeartbeatInterval = 0
 	}
 	// Note: custom.HeartbeatInterval == 0 means "not set", keep default
-	defaults.Reconnect = custom.Reconnect
+	if custom.Reconnect != nil {
+		defaults.Reconnect = custom.Reconnect
+	}
 	defaults.QoS = custom.QoS
 	defaults.LoadBalance = custom.LoadBalance
 	defaults.LoadBalanceGroup = custom.LoadBalanceGroup
@@ -869,6 +874,11 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 		c.emit(fmt.Sprintf("lobby:%s:presence:%s", msg.LobbyID, msg.Event), event)
 		c.emit(fmt.Sprintf("lobbyPresence:%s", msg.Event), event)
 
+	case msgTypeHydration:
+		// The hydration webhook's response body, forwarded once per subscribe.
+		// msg.Topic is the bare topic name, not the room-qualified pattern.
+		c.emit("hydration", msg.Topic, msg.Data)
+
 	case msgTypeError:
 		c.emit("error", &ServerError{
 			Code:   msg.Code,
@@ -893,7 +903,7 @@ func (c *Client) handleDisconnect() {
 
 	c.emit("disconnected")
 
-	if c.options.Reconnect {
+	if c.options.Reconnect != nil && *c.options.Reconnect {
 		go c.reconnect()
 	}
 }

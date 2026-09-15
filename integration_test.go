@@ -31,10 +31,10 @@ import (
 
 var (
 	iAPIKey    = os.Getenv("NOLAG_API_KEY")
-	iAppSlug  = iGetEnv("NOLAG_APP_SLUG", "nolag-agents-sdk-3529")
-	iRoom     = iGetEnv("NOLAG_ROOM", "go-integration-test")
+	iAppSlug   = iGetEnv("NOLAG_APP_SLUG", "nolag-agents-sdk-3529")
+	iRoom      = iGetEnv("NOLAG_ROOM", "go-integration-test")
 	iBrokerURL = iGetEnv("NOLAG_BROKER_URL", "wss://broker.nolag.app/ws")
-	iAPIURL   = iGetEnv("NOLAG_API_URL", "https://api.nolag.app/v1")
+	iAPIURL    = iGetEnv("NOLAG_API_URL", "https://api.nolag.app/v1")
 
 	// Populated by TestMain
 	iToken1   string
@@ -236,7 +236,7 @@ func TestIntegration_ConnectAuth(t *testing.T) {
 }
 
 func TestIntegration_ConnectionStatus(t *testing.T) {
-	a := New(iToken1, Options{URL: iBrokerURL, HeartbeatInterval: -1, Reconnect: false})
+	a := New(iToken1, Options{URL: iBrokerURL, HeartbeatInterval: -1, Reconnect: Bool(false)})
 	if a.Status() != StatusDisconnected {
 		t.Fatalf("expected disconnected before connect, got %v", a.Status())
 	}
@@ -253,7 +253,7 @@ func TestIntegration_ConnectionStatus(t *testing.T) {
 }
 
 func TestIntegration_InvalidToken(t *testing.T) {
-	c := New("invalid_token_xxx", Options{URL: iBrokerURL, Reconnect: false, HeartbeatInterval: -1})
+	c := New("invalid_token_xxx", Options{URL: iBrokerURL, Reconnect: Bool(false), HeartbeatInterval: -1})
 	err := c.Connect()
 	if err == nil {
 		c.Close()
@@ -263,7 +263,7 @@ func TestIntegration_InvalidToken(t *testing.T) {
 }
 
 func TestIntegration_ConnectDisconnectEvents(t *testing.T) {
-	a := New(iToken1, Options{URL: iBrokerURL, HeartbeatInterval: -1, Reconnect: false})
+	a := New(iToken1, Options{URL: iBrokerURL, HeartbeatInterval: -1, Reconnect: Bool(false)})
 
 	var connectCalled, disconnectCalled atomic.Bool
 	a.On("connected", func(args ...any) { connectCalled.Store(true) })
@@ -1030,7 +1030,7 @@ func TestIntegration_MultipleHandlers(t *testing.T) {
 func TestIntegration_Heartbeat(t *testing.T) {
 	a := New(iToken1, Options{
 		URL:               iBrokerURL,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 1 * time.Second,
 	})
 	if err := a.Connect(); err != nil {
@@ -1046,7 +1046,7 @@ func TestIntegration_Heartbeat(t *testing.T) {
 }
 
 func TestIntegration_ErrorBeforeConnect(t *testing.T) {
-	c := New(iToken1, Options{URL: iBrokerURL, Reconnect: false})
+	c := New(iToken1, Options{URL: iBrokerURL, Reconnect: Bool(false)})
 
 	if err := c.Subscribe("test", func(data any, meta MessageMeta) {}); err != ErrNotConnected {
 		t.Fatalf("subscribe before connect: expected ErrNotConnected, got %v", err)
@@ -1218,7 +1218,7 @@ func TestIntegration_API_Pagination(t *testing.T) {
 	if len(apps.Data) > 1 {
 		t.Fatalf("expected <= 1 result with limit=1, got %d", len(apps.Data))
 	}
-	t.Logf("pagination: page=%d limit=%d total=%d", apps.Page, apps.Limit, apps.Total)
+	t.Logf("pagination: page=%d pageCount=%d total=%d", apps.Pagination.Page, apps.Pagination.PageCount, apps.Pagination.Total)
 }
 
 // ── Utilities ───────────────────────────────────────────────────────

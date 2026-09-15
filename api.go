@@ -358,13 +358,25 @@ type ScopeUpdate struct {
 	IsActive    *bool          `json:"isActive,omitempty"`
 }
 
-// PaginatedResult is a paginated API response.
+// Pagination is the page metadata the control plane returns with every list.
+type Pagination struct {
+	Total     int `json:"total"`
+	Page      int `json:"page"`
+	PageCount int `json:"pageCount"`
+}
+
+// PaginatedApps is the response of AppsAPI.List. Before v0.5.0 the metadata
+// was declared as flat total/page/limit/totalPages fields, which the backend
+// never sends, so they always read zero.
 type PaginatedApps struct {
 	Data       []AppResource `json:"data"`
-	Total      int           `json:"total"`
-	Page       int           `json:"page"`
-	Limit      int           `json:"limit"`
-	TotalPages int           `json:"totalPages"`
+	Pagination Pagination    `json:"pagination"`
+}
+
+// PaginatedScopes is the response of ScopesAPI.List.
+type PaginatedScopes struct {
+	Data       []ScopeResource `json:"data"`
+	Pagination Pagination      `json:"pagination"`
 }
 
 // ListOptions are options for list endpoints.
@@ -593,13 +605,16 @@ type ScopesAPI struct {
 	api *API
 }
 
-// List returns all access scopes in the project.
-func (s *ScopesAPI) List(ctx context.Context) ([]ScopeResource, error) {
-	var result []ScopeResource
+// List returns a page of access scopes in the project.
+//
+// Before v0.5.0 this decoded the paginated envelope into a bare slice and
+// failed on every call.
+func (s *ScopesAPI) List(ctx context.Context) (*PaginatedScopes, error) {
+	var result PaginatedScopes
 	if err := s.api.request(ctx, "GET", "/scopes", nil, &result); err != nil {
 		return nil, err
 	}
-	return result, nil
+	return &result, nil
 }
 
 // Get returns an access scope by ID.

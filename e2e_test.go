@@ -68,7 +68,7 @@ func TestConnectAndAuthenticate(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -86,7 +86,7 @@ func TestConnectAndAuthenticate(t *testing.T) {
 func TestFailWithInvalidToken(t *testing.T) {
 	client := New("invalid_token", Options{
 		URL:       testURL,
-		Reconnect: false,
+		Reconnect: Bool(false),
 	})
 
 	err := client.Connect()
@@ -106,7 +106,7 @@ func TestDisconnectCleanly(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -132,7 +132,7 @@ func TestEmitConnectEvent(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -159,7 +159,7 @@ func TestEmitDisconnectEvent(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -191,7 +191,7 @@ func TestSubscribeToTopic(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -213,7 +213,7 @@ func TestUnsubscribeFromTopic(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -242,7 +242,7 @@ func TestReceiveOwnPublishedMessage(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -293,7 +293,7 @@ func TestSetAppSetRoomPattern(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -356,7 +356,7 @@ func TestSubscribeWithLoadBalancing(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 		LoadBalance:       true,
 		LoadBalanceGroup:  "test-workers",
@@ -380,7 +380,7 @@ func TestOverrideLoadBalancePerSubscription(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 		LoadBalance:       false,
 	})
@@ -408,14 +408,14 @@ func TestLoadBalanceDistribution(t *testing.T) {
 	client1 := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
 	client2 := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -423,7 +423,7 @@ func TestLoadBalanceDistribution(t *testing.T) {
 	publisher := New(testToken2, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -506,7 +506,7 @@ func TestReceiveOwnMessageEchoTrue(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -556,7 +556,7 @@ func TestNotReceiveOwnMessageEchoFalse(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -608,14 +608,14 @@ func TestDeliverMessagesBetweenClients(t *testing.T) {
 	client1 := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
 	client2 := New(testToken2, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -670,14 +670,14 @@ func TestBidirectionalMessaging(t *testing.T) {
 	client1 := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
 	client2 := New(testToken2, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 0,
 	})
 
@@ -741,7 +741,7 @@ func TestHeartbeatKeepsConnection(t *testing.T) {
 	client := New(testToken, Options{
 		URL:               testURL,
 		Debug:             true,
-		Reconnect:         false,
+		Reconnect:         Bool(false),
 		HeartbeatInterval: 1 * time.Second, // 1 second for testing
 	})
 
@@ -769,7 +769,7 @@ func TestHeartbeatKeepsConnection(t *testing.T) {
 func TestHandleSubscribeBeforeConnect(t *testing.T) {
 	client := New(testToken, Options{
 		URL:       testURL,
-		Reconnect: false,
+		Reconnect: Bool(false),
 	})
 
 	err := client.Subscribe("test/topic", func(data any, meta MessageMeta) {})
@@ -785,7 +785,7 @@ func TestHandleSubscribeBeforeConnect(t *testing.T) {
 func TestHandleEmitBeforeConnect(t *testing.T) {
 	client := New(testToken, Options{
 		URL:       testURL,
-		Reconnect: false,
+		Reconnect: Bool(false),
 	})
 
 	err := client.Emit("test/topic", map[string]any{"data": "test"})
