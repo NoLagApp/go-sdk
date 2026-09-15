@@ -87,7 +87,9 @@ func mergeOptions(defaults, custom Options) Options {
 	if custom.Reconnect != nil {
 		defaults.Reconnect = custom.Reconnect
 	}
-	defaults.QoS = custom.QoS
+	if custom.QoS != nil {
+		defaults.QoS = custom.QoS
+	}
 	defaults.LoadBalance = custom.LoadBalance
 	defaults.LoadBalanceGroup = custom.LoadBalanceGroup
 	defaults.ActorTokenID = custom.ActorTokenID
@@ -308,9 +310,13 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 	// Use connection-level defaults, allow per-topic override
 	loadBalance := c.options.LoadBalance
 	loadBalanceGroup := c.options.LoadBalanceGroup
+	qos := *c.options.QoS
 
 	if len(opts) > 0 {
 		opt := opts[0]
+		if opt.QoS != nil {
+			qos = *opt.QoS
+		}
 		if opt.LoadBalance != nil {
 			loadBalance = *opt.LoadBalance
 		}
@@ -332,6 +338,9 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 			msg.LoadBalanceGroup = loadBalanceGroup
 		}
 	}
+	// Before v0.5.0 the QoS options existed but were never put on the wire,
+	// so every Go client ran at the broker default of 1.
+	msg.QoS = &qos
 
 	// Fire-and-forget like JS SDK - don't wait for ack
 	if err := c.send(msg); err != nil {
@@ -480,9 +489,14 @@ func (c *Client) Emit(topic string, data any, opts ...EmitOptions) error {
 		Topic: topic,
 		Data:  data,
 	}
+	qos := *c.options.QoS
+	msg.QoS = &qos
 
 	if len(opts) > 0 {
 		opt := opts[0]
+		if opt.QoS != nil {
+			msg.QoS = opt.QoS
+		}
 		msg.Retain = opt.Retain
 		msg.Echo = opt.Echo
 		if opt.Filter != "" {

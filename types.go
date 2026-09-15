@@ -45,9 +45,13 @@ const (
 type QoS int
 
 const (
-	QoSAtMostOnce  QoS = 0 // Fire and forget
-	QoSAtLeastOnce QoS = 1 // Guaranteed delivery, may duplicate
-	QoSExactlyOnce QoS = 2 // Guaranteed exactly once
+	// QoS is forwarded to the broker's internal MQTT hop. The WebSocket leg
+	// has an optional publish ack and no resend, so none of these is an
+	// end-to-end guarantee; deduplicate with an idempotency key if a message
+	// must not be applied twice.
+	QoSAtMostOnce  QoS = 0 // Fire and forget on the broker hop
+	QoSAtLeastOnce QoS = 1 // Acknowledged on the broker hop (default)
+	QoSExactlyOnce QoS = 2 // Deduplicated on the broker hop
 )
 
 // Options configures the NoLag client.
@@ -74,8 +78,10 @@ type Options struct {
 	// 0 means "not set" and keeps the default; -1 disables heartbeats.
 	HeartbeatInterval time.Duration
 
-	// QoS is the default quality of service level. Default: QoSAtLeastOnce
-	QoS QoS
+	// QoS is the default quality of service level. Default: QoSAtLeastOnce.
+	// A pointer for the same reason as Reconnect: QoS 0 is a real level, so
+	// an omitted field must be distinguishable from it. Use nolag.QoSLevel().
+	QoS *QoS
 
 	// LoadBalance enables load balancing across subscribers. Default: false
 	LoadBalance bool
@@ -93,6 +99,10 @@ type Options struct {
 // Bool returns a pointer to b, for the pointer-typed Options fields.
 func Bool(b bool) *bool { return &b }
 
+// QoSLevel returns a pointer to q, for the pointer-typed QoS fields on
+// Options, SubscribeOptions and EmitOptions.
+func QoSLevel(q QoS) *QoS { return &q }
+
 // DefaultOptions returns options with sensible defaults.
 func DefaultOptions() Options {
 	return Options{
@@ -101,7 +111,7 @@ func DefaultOptions() Options {
 		ReconnectInterval:    5 * time.Second,
 		MaxReconnectAttempts: 10,
 		HeartbeatInterval:    30 * time.Second,
-		QoS:                  QoSAtLeastOnce,
+		QoS:                  QoSLevel(QoSAtLeastOnce),
 		LoadBalance:          false,
 		Debug:                false,
 	}
@@ -200,7 +210,7 @@ type protocolMessage struct {
 	Data             any            `msgpack:"data,omitempty"`
 	Token            string         `msgpack:"token,omitempty"`
 	ID               string         `msgpack:"id,omitempty"`
-	QoS              QoS            `msgpack:"qos,omitempty"`
+	QoS              *QoS           `msgpack:"qos,omitempty"` // pointer so QoS 0 is sent, not omitted
 	Retain           bool           `msgpack:"retain,omitempty"`
 	Echo             *bool          `msgpack:"echo,omitempty"`
 	LoadBalance      bool           `msgpack:"loadBalance,omitempty"`

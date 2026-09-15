@@ -68,7 +68,7 @@ options := nolag.Options{
     ReconnectInterval:    5 * time.Second,              // Reconnect interval
     MaxReconnectAttempts: 10,                           // Max attempts (-1 = unlimited)
     HeartbeatInterval:    30 * time.Second,             // Heartbeat interval (-1 to disable)
-    QoS:                  nolag.QoSAtLeastOnce,         // Default QoS
+    QoS:                  nolag.QoSLevel(nolag.QoSAtLeastOnce), // Default QoS (omit to keep it)
     Debug:                true,                         // Enable debug logging
 }
 
@@ -202,18 +202,19 @@ func main() {
 | Level | Constant | Description |
 |-------|----------|-------------|
 | 0 | `QoSAtMostOnce` | Fire and forget, no acknowledgment |
-| 1 | `QoSAtLeastOnce` | Guaranteed delivery, may have duplicates |
-| 2 | `QoSExactlyOnce` | Guaranteed exactly one delivery |
+| 1 | `QoSAtLeastOnce` | Acknowledged on the broker hop (default) |
+| 2 | `QoSExactlyOnce` | Deduplicated on the broker hop |
+
+QoS is forwarded to the broker's internal MQTT hop. The WebSocket leg has an optional publish ack and no resend, so none of these is an end-to-end guarantee; if a message must not be applied twice, put an idempotency key in the payload.
 
 ```go
 // Set default QoS in options
 options := nolag.Options{
-    QoS: nolag.QoSExactlyOnce,
+    QoS: nolag.QoSLevel(nolag.QoSExactlyOnce),
 }
 
 // Or per-message
-qos := nolag.QoSExactlyOnce
-client.Emit("important", data, nolag.EmitOptions{QoS: &qos})
+client.Emit("important", data, nolag.EmitOptions{QoS: nolag.QoSLevel(nolag.QoSExactlyOnce)})
 ```
 
 ## Load Balancing

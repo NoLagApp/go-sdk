@@ -74,3 +74,24 @@ func TestHydrationFrameIsEmitted(t *testing.T) {
 		t.Fatalf("data not forwarded: %#v", gotData)
 	}
 }
+
+// QoS was declared on every options struct but never written to a frame,
+// so every Go client ran at the broker default. It must now be on the wire,
+// including level 0, which omitempty on a plain int would have dropped.
+func TestQoSIsSentOnSubscribeAndPublish(t *testing.T) {
+	cases := []struct {
+		name string
+		opts Options
+		want QoS
+	}{
+		{"default", Options{}, QoSAtLeastOnce},
+		{"connection-level zero", Options{QoS: QoSLevel(QoSAtMostOnce)}, QoSAtMostOnce},
+		{"connection-level two", Options{QoS: QoSLevel(QoSExactlyOnce)}, QoSExactlyOnce},
+	}
+	for _, c := range cases {
+		got := mergeOptions(DefaultOptions(), c.opts)
+		if got.QoS == nil || *got.QoS != c.want {
+			t.Errorf("%s: want %d, got %v", c.name, c.want, got.QoS)
+		}
+	}
+}
