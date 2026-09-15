@@ -515,6 +515,17 @@ func (r *RoomsAPI) Create(ctx context.Context, appID string, data RoomCreate) (*
 	return &result, nil
 }
 
+// Ensure creates the room if it does not exist and returns it unchanged if it
+// does. Requires config.autoProvisionRooms to be true on the app; the control
+// plane answers 403 otherwise.
+func (r *RoomsAPI) Ensure(ctx context.Context, appID string, data RoomCreate) (*RoomResource, error) {
+	var result RoomResource
+	if err := r.api.request(ctx, "POST", "/apps/"+appID+"/rooms/ensure", data, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // Update updates a room.
 func (r *RoomsAPI) Update(ctx context.Context, appID, roomID string, data RoomUpdate) (*RoomResource, error) {
 	var result RoomResource
