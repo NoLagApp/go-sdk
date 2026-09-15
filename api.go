@@ -199,12 +199,21 @@ type AppResource struct {
 }
 
 // AppCreate is the request to create an app.
+//
+// Topics names the topics actors may address in this app's rooms. An app
+// created without topics (and without a blueprint that supplies them)
+// refuses every subscribe with unknown_topic.
 type AppCreate struct {
-	Name        string         `json:"name"`
-	Slug        string         `json:"slug,omitempty"`
-	Description string         `json:"description,omitempty"`
-	BlueprintID string         `json:"blueprintId,omitempty"`
-	Config      map[string]any `json:"config,omitempty"`
+	Name             string         `json:"name"`
+	Slug             string         `json:"slug,omitempty"`
+	Description      string         `json:"description,omitempty"`
+	BlueprintID      string         `json:"blueprintId,omitempty"`
+	BlueprintVersion string         `json:"blueprintVersion,omitempty"`
+	Config           map[string]any `json:"config,omitempty"`
+	Topics           []string       `json:"topics,omitempty"`
+	TopicConfigs     map[string]any `json:"topicConfigs,omitempty"`
+	HydrationWebhook map[string]any `json:"hydrationWebhook,omitempty"`
+	TriggerWebhook   map[string]any `json:"triggerWebhook,omitempty"`
 }
 
 // AppUpdate is the request to update an app.
