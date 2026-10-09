@@ -247,6 +247,16 @@ type protocolMessage struct {
 	Presence any    `msgpack:"presence,omitempty"`
 }
 
+// setFiltersFrame is the setFilters frame. It has a type of its own because
+// protocolMessage omits empty fields, and an empty list is the one that
+// switches a subscription back to wildcard: the broker ignores a setFilters
+// frame without the field.
+type setFiltersFrame struct {
+	Type    messageType `msgpack:"type"`
+	Topic   string      `msgpack:"topic"`
+	Filters []any       `msgpack:"filters"`
+}
+
 type messageMeta struct {
 	Sender    string  `msgpack:"sender,omitempty"`
 	Timestamp float64 `msgpack:"timestamp,omitempty"`

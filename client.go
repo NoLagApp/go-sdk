@@ -451,10 +451,13 @@ func (c *Client) setFiltersLocked(topic string, filters []any) error {
 	}
 
 	filters = cloneFilters(filters)
-	msg := &protocolMessage{
+	msg := &setFiltersFrame{
 		Type:    "setFilters",
 		Topic:   topic,
 		Filters: filters,
+	}
+	if msg.Filters == nil {
+		msg.Filters = []any{}
 	}
 
 	if err := c.send(msg); err != nil {
@@ -732,7 +735,9 @@ func (c *Client) emit(event string, args ...any) {
 	}
 }
 
-func (c *Client) send(msg *protocolMessage) error {
+// send writes one frame: a *protocolMessage, or a frame type of its own such
+// as setFiltersFrame.
+func (c *Client) send(msg any) error {
 	data, err := msgpack.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal failed: %w", err)
