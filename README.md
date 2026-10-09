@@ -138,6 +138,18 @@ if client.Status() == nolag.StatusConnected {
 }
 ```
 
+## Reconnects
+
+When the connection drops, the client reconnects by itself (see `Reconnect` and `MaxReconnectAttempts`) and puts its session back before it emits `connected`:
+
+- every subscription, with the options it was made with (QoS, load balancing, group) and its current filters, including changes made with `SetFilters`, `AddFilters` or `RemoveFilters`. A subscription the broker reports as already restored, with the same filters, is not sent again.
+- the last presence set with `SetPresence` for a room, and the last one set without a room.
+- lobby subscriptions.
+
+The broker forgets subscriptions when it restarts, and presence and lobbies always end with the connection, so this is what keeps a filtered subscription filtered and your presence visible after any reconnect. You do not need to subscribe again in a `connected` handler. Doing so is harmless: a subscribe replaces the broker's subscription for that topic, and the client keeps one handler per topic, so nothing is delivered twice.
+
+`Unsubscribe` and `Lobby.Unsubscribe` remove the topic or lobby from the session even when they return an error (for example `ErrNotConnected` while reconnecting), so it does not come back. `Close` ends the session: it forgets subscriptions, presence and lobbies and stops a reconnect in progress, and a later `Connect` starts fresh.
+
 ## Presence
 
 ```go

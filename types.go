@@ -236,6 +236,9 @@ type protocolMessage struct {
 	ActorTokenId string `msgpack:"actorTokenId,omitempty"`
 	ProjectID    string `msgpack:"projectId,omitempty"`
 	ActorTypeStr string `msgpack:"actorType,omitempty"`
+	// Subscriptions the broker put back by itself on a reconnect: topic
+	// strings, or maps naming the topic (see parseRestored).
+	RestoredSubscriptions []any `msgpack:"restoredSubscriptions,omitempty"`
 	// Lobby fields
 	LobbyID  string `msgpack:"lobbyId,omitempty"`
 	RoomID   string `msgpack:"roomId,omitempty"`
