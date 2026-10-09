@@ -236,12 +236,25 @@ type protocolMessage struct {
 	ActorTokenId string `msgpack:"actorTokenId,omitempty"`
 	ProjectID    string `msgpack:"projectId,omitempty"`
 	ActorTypeStr string `msgpack:"actorType,omitempty"`
+	// Subscriptions the broker put back by itself on a reconnect: topic
+	// strings, or maps naming the topic (see parseRestored).
+	RestoredSubscriptions []any `msgpack:"restoredSubscriptions,omitempty"`
 	// Lobby fields
 	LobbyID  string `msgpack:"lobbyId,omitempty"`
 	RoomID   string `msgpack:"roomId,omitempty"`
 	ActorID  string `msgpack:"actorId,omitempty"`
 	Event    string `msgpack:"event,omitempty"`
 	Presence any    `msgpack:"presence,omitempty"`
+}
+
+// setFiltersFrame is the setFilters frame. It has a type of its own because
+// protocolMessage omits empty fields, and an empty list is the one that
+// switches a subscription back to wildcard: the broker ignores a setFilters
+// frame without the field.
+type setFiltersFrame struct {
+	Type    messageType `msgpack:"type"`
+	Topic   string      `msgpack:"topic"`
+	Filters []any       `msgpack:"filters"`
 }
 
 type messageMeta struct {

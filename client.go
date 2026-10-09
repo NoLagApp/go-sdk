@@ -30,16 +30,30 @@ type Client struct {
 	actorID         string
 	projectID       string
 	actorType       ActorType
-	subscriptions   map[string]MessageHandler
-	topicFilters    map[string][]any
 	eventHandlers   map[string][]EventHandler
 	pendingAcks     map[string]chan *protocolMessage
 	messageID       int
 	reconnectCount  int
 	protocolVersion int
 
-	mu            sync.RWMutex
-	writeMu       sync.Mutex
+	// The session (see session.go): what the caller asked for, put back after
+	// a reconnect and cleared by Close.
+	subscriptions   map[string]subscription
+	roomPresence    *roomPresence
+	projectPresence map[string]any
+	lobbies         map[string]struct{}
+	// session is incremented by Close. A reconnect loop or an in-flight call
+	// that started under an earlier value belongs to an ended session.
+	session uint64
+
+	mu      sync.RWMutex
+	writeMu sync.Mutex
+	// sessionMu serialises each change to the session with the frame that
+	// carries it, and with restoreSession, so the broker sees them in the
+	// order the session records them.
+	sessionMu sync.Mutex
+	// done and heartbeatDone belong to the current connection and are
+	// closed when it is dropped.
 	done          chan struct{}
 	heartbeatDone chan struct{}
 }
@@ -51,15 +65,15 @@ func New(token string, opts ...Options) *Client {
 		options = mergeOptions(options, opts[0])
 	}
 
-	return &Client{
+	c := &Client{
 		token:         token,
 		options:       options,
 		status:        StatusDisconnected,
-		subscriptions: make(map[string]MessageHandler),
-		topicFilters:  make(map[string][]any),
 		eventHandlers: make(map[string][]EventHandler),
 		pendingAcks:   make(map[string]chan *protocolMessage),
 	}
+	c.clearSessionLocked()
+	return c
 }
 
 func mergeOptions(defaults, custom Options) Options {
@@ -98,14 +112,37 @@ func mergeOptions(defaults, custom Options) Options {
 }
 
 // Connect establishes a connection to the NoLag broker.
+//
+// When the client already has a session (it reconnected automatically, or
+// Connect is called again after the connection dropped without Close), the
+// session is put back before the "connected" event: every subscription the
+// broker did not restore by itself is sent again with its options and
+// current filters, and presence and lobby subscriptions are sent again. A
+// "connected" handler that subscribes again is harmless: a subscribe replaces
+// the broker's subscription for that topic and the client keeps one handler
+// per topic, so nothing is delivered twice.
 func (c *Client) Connect() error {
+	c.mu.RLock()
+	session := c.session
+	c.mu.RUnlock()
+	return c.connect(session)
+}
+
+// connect dials and authenticates for the given session, and fails if Close
+// ends that session first.
+func (c *Client) connect(session uint64) error {
 	c.mu.Lock()
+	if c.session != session {
+		c.mu.Unlock()
+		return ErrNotConnected
+	}
 	if c.status == StatusConnected || c.status == StatusConnecting {
 		c.mu.Unlock()
 		return nil
 	}
 	c.status = StatusConnecting
-	c.done = make(chan struct{})
+	// Tells the server to restore subscriptions it still holds.
+	isReconnect := c.reconnectCount > 0
 	c.mu.Unlock()
 
 	c.emit("connecting")
@@ -117,33 +154,56 @@ func (c *Client) Connect() error {
 	conn, _, err := dialer.Dial(c.options.URL, http.Header{})
 	if err != nil {
 		c.mu.Lock()
-		c.status = StatusDisconnected
+		if c.session == session && c.status == StatusConnecting {
+			c.status = StatusDisconnected
+		}
 		c.mu.Unlock()
 		c.emit("error", err)
 		return fmt.Errorf("dial failed: %w", err)
 	}
 
+	done := make(chan struct{})
 	c.mu.Lock()
+	if c.session != session || c.status != StatusConnecting {
+		// Close ran while dialling.
+		c.mu.Unlock()
+		conn.Close()
+		return ErrNotConnected
+	}
 	c.conn = conn
+	c.done = done
 	c.mu.Unlock()
 
 	// Start message reader
-	go c.readLoop()
+	go c.readLoop(conn, done)
 
-	// Authenticate
-	if err := c.authenticate(); err != nil {
-		c.Close()
+	// Authenticate, then put the session back before reporting connected
+	restored, err := c.authenticate(isReconnect, done)
+	if err == nil {
+		err = c.restoreSession(restored)
+	}
+	if err == nil {
+		c.mu.Lock()
+		if c.conn == conn && c.session == session {
+			c.status = StatusConnected
+			c.authenticated = true
+			c.reconnectCount = 0
+		} else {
+			err = ErrNotConnected
+		}
+		c.mu.Unlock()
+	}
+	if err != nil {
+		c.mu.Lock()
+		if c.dropConnLocked(conn) {
+			c.status = StatusDisconnected
+		}
+		c.mu.Unlock()
 		return err
 	}
 
-	c.mu.Lock()
-	c.status = StatusConnected
-	c.authenticated = true
-	c.reconnectCount = 0
-	c.mu.Unlock()
-
 	// Start heartbeat
-	c.startHeartbeat()
+	c.startHeartbeat(conn)
 
 	c.emit("connected")
 	c.log("Connected to NoLag")
@@ -151,17 +211,14 @@ func (c *Client) Connect() error {
 	return nil
 }
 
-func (c *Client) authenticate() error {
+// authenticate sends the auth frame and waits for the reply. It returns the
+// reply's restoredSubscriptions.
+func (c *Client) authenticate(isReconnect bool, done chan struct{}) ([]any, error) {
 	msg := &protocolMessage{
 		Type:            msgTypeAuth,
 		Token:           c.token,
 		ProtocolVersion: ProtocolVersion,
-	}
-
-	// Include reconnect flag if this is a reconnection attempt
-	// This tells the server to restore subscriptions
-	if c.reconnectCount > 0 {
-		msg.Reconnect = true
+		Reconnect:       isReconnect,
 	}
 
 	// Auth uses a special handler (no message ID matching)
@@ -178,16 +235,16 @@ func (c *Client) authenticate() error {
 	}()
 
 	if err := c.send(msg); err != nil {
-		return fmt.Errorf("auth failed: %w", err)
+		return nil, fmt.Errorf("auth failed: %w", err)
 	}
 
 	select {
 	case resp := <-authChan:
 		if resp.Error != "" {
-			return fmt.Errorf("%w: %s", ErrAuthFailed, resp.Error)
+			return nil, fmt.Errorf("%w: %s", ErrAuthFailed, resp.Error)
 		}
 		if !resp.Success {
-			return fmt.Errorf("%w: server returned success=false", ErrAuthFailed)
+			return nil, fmt.Errorf("%w: server returned success=false", ErrAuthFailed)
 		}
 		// Extract actor info from response. Guarded because readLoop is already
 		// running and the accessors read these under RLock.
@@ -208,48 +265,66 @@ func (c *Client) authenticate() error {
 		c.mu.Unlock()
 
 		c.log("Protocol version negotiated:", negotiated)
-		return nil
+		if len(resp.RestoredSubscriptions) > 0 {
+			c.log("Server restored subscriptions:", resp.RestoredSubscriptions)
+		}
+		return resp.RestoredSubscriptions, nil
 	case <-time.After(10 * time.Second):
-		return fmt.Errorf("auth failed: %w", ErrTimeout)
-	case <-c.done:
-		return fmt.Errorf("auth failed: %w", ErrNotConnected)
+		return nil, fmt.Errorf("auth failed: %w", ErrTimeout)
+	case <-done:
+		return nil, fmt.Errorf("auth failed: %w", ErrNotConnected)
 	}
 }
 
-// Close disconnects from the broker.
+// Close disconnects from the broker and ends the session: the client forgets
+// its subscriptions, presence and lobby subscriptions, and a reconnect in
+// progress stops. A later Connect starts a fresh session.
 func (c *Client) Close() error {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if c.status == StatusDisconnected {
-		return nil
-	}
-
+	c.session++
+	c.clearSessionLocked()
+	c.reconnectCount = 0
+	wasActive := c.status != StatusDisconnected
 	c.status = StatusDisconnected
 	c.authenticated = false
+	c.dropConnLocked(c.conn)
+	c.mu.Unlock()
 
-	// Stop heartbeat
+	if wasActive {
+		go c.emit("disconnected")
+		c.log("Disconnected")
+	}
+
+	return nil
+}
+
+// dropConnLocked closes conn and releases what belongs to it, if conn is
+// still the current connection. c.mu must be held for writing. It returns
+// false when conn was already dropped or replaced.
+func (c *Client) dropConnLocked(conn *websocket.Conn) bool {
+	if conn == nil || c.conn != conn {
+		return false
+	}
+	c.conn = nil
+	c.authenticated = false
 	if c.heartbeatDone != nil {
 		close(c.heartbeatDone)
 		c.heartbeatDone = nil
 	}
-
-	// Close done channel
 	if c.done != nil {
 		close(c.done)
 		c.done = nil
 	}
+	conn.Close()
+	return true
+}
 
-	// Close WebSocket
-	if c.conn != nil {
-		c.conn.Close()
-		c.conn = nil
-	}
-
-	go c.emit("disconnected")
-	c.log("Disconnected")
-
-	return nil
+// connectedSession returns the current session and whether the client is
+// connected.
+func (c *Client) connectedSession() (uint64, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.session, c.status == StatusConnected
 }
 
 // Status returns the current connection status.
@@ -294,61 +369,30 @@ func (c *Client) ProtocolVersion() int {
 
 // Subscribe registers a handler for messages on the given topic.
 // Note: Subscribe is fire-and-forget like the JS SDK - it doesn't wait for server acknowledgment.
+//
+// The subscription, with its options, is part of the session: after a
+// reconnect it is restored with its current filters. Subscribing to a topic
+// again replaces its handler and options.
 func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...SubscribeOptions) error {
-	c.mu.RLock()
-	if c.status != StatusConnected {
-		c.mu.RUnlock()
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	session, connected := c.connectedSession()
+	if !connected {
 		return ErrNotConnected
 	}
-	c.mu.RUnlock()
 
-	msg := &protocolMessage{
-		Type:  msgTypeSubscribe,
-		Topic: topic,
-	}
-
-	// Use connection-level defaults, allow per-topic override
-	loadBalance := c.options.LoadBalance
-	loadBalanceGroup := c.options.LoadBalanceGroup
-	qos := *c.options.QoS
-
-	if len(opts) > 0 {
-		opt := opts[0]
-		if opt.QoS != nil {
-			qos = *opt.QoS
-		}
-		if opt.LoadBalance != nil {
-			loadBalance = *opt.LoadBalance
-		}
-		if opt.LoadBalanceGroup != "" {
-			loadBalanceGroup = opt.LoadBalanceGroup
-		}
-		if len(opt.Filters) > 0 {
-			msg.Filters = opt.Filters
-			c.mu.Lock()
-			c.topicFilters[topic] = opt.Filters
-			c.mu.Unlock()
-		}
-	}
-
-	// Only include loadBalance fields when actually using load balancing
-	if loadBalance {
-		msg.LoadBalance = true
-		if loadBalanceGroup != "" {
-			msg.LoadBalanceGroup = loadBalanceGroup
-		}
-	}
-	// Before v0.5.0 the QoS options existed but were never put on the wire,
-	// so every Go client ran at the broker default of 1.
-	msg.QoS = &qos
+	sub := c.newSubscription(handler, opts)
 
 	// Fire-and-forget like JS SDK - don't wait for ack
-	if err := c.send(msg); err != nil {
+	if err := c.send(sub.frame(topic)); err != nil {
 		return fmt.Errorf("subscribe failed: %w", err)
 	}
 
 	c.mu.Lock()
-	c.subscriptions[topic] = handler
+	if c.session == session {
+		c.subscriptions[topic] = sub
+	}
 	c.mu.Unlock()
 
 	c.log("Subscribed to:", topic)
@@ -357,13 +401,21 @@ func (c *Client) Subscribe(topic string, handler MessageHandler, opts ...Subscri
 
 // Unsubscribe removes a subscription from a topic.
 // Note: Unsubscribe is fire-and-forget like the JS SDK.
+//
+// The topic leaves the session even when Unsubscribe returns an error (for
+// example ErrNotConnected during a reconnect), so it is not restored later.
 func (c *Client) Unsubscribe(topic string) error {
-	c.mu.RLock()
-	if c.status != StatusConnected {
-		c.mu.RUnlock()
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	c.mu.Lock()
+	delete(c.subscriptions, topic)
+	connected := c.status == StatusConnected
+	c.mu.Unlock()
+
+	if !connected {
 		return ErrNotConnected
 	}
-	c.mu.RUnlock()
 
 	msg := &protocolMessage{
 		Type:  msgTypeUnsub,
@@ -375,11 +427,6 @@ func (c *Client) Unsubscribe(topic string) error {
 		return fmt.Errorf("unsubscribe failed: %w", err)
 	}
 
-	c.mu.Lock()
-	delete(c.subscriptions, topic)
-	delete(c.topicFilters, topic)
-	c.mu.Unlock()
-
 	c.log("Unsubscribed from:", topic)
 	return nil
 }
@@ -387,18 +434,30 @@ func (c *Client) Unsubscribe(topic string) error {
 // SetFilters replaces all filters for a topic.
 // Empty slice switches back to wildcard (receive all messages).
 // Accepts mixed items: string for OR, []string for AND groups.
+//
+// The new filters are recorded on the subscription, so a reconnect restores
+// them rather than the ones passed to Subscribe.
 func (c *Client) SetFilters(topic string, filters []any) error {
-	c.mu.RLock()
-	if c.status != StatusConnected {
-		c.mu.RUnlock()
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+	return c.setFiltersLocked(topic, filters)
+}
+
+// setFiltersLocked is SetFilters with c.sessionMu held.
+func (c *Client) setFiltersLocked(topic string, filters []any) error {
+	session, connected := c.connectedSession()
+	if !connected {
 		return ErrNotConnected
 	}
-	c.mu.RUnlock()
 
-	msg := &protocolMessage{
+	filters = cloneFilters(filters)
+	msg := &setFiltersFrame{
 		Type:    "setFilters",
 		Topic:   topic,
 		Filters: filters,
+	}
+	if msg.Filters == nil {
+		msg.Filters = []any{}
 	}
 
 	if err := c.send(msg); err != nil {
@@ -406,22 +465,29 @@ func (c *Client) SetFilters(topic string, filters []any) error {
 	}
 
 	c.mu.Lock()
-	if len(filters) > 0 {
-		c.topicFilters[topic] = filters
-	} else {
-		delete(c.topicFilters, topic)
+	if sub, ok := c.subscriptions[topic]; ok && c.session == session {
+		sub.filters = filters
+		c.subscriptions[topic] = sub
 	}
 	c.mu.Unlock()
 
 	return nil
 }
 
+// topicFilters returns the current filters of a subscribed topic.
+func (c *Client) topicFilters(topic string) []any {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.subscriptions[topic].filters
+}
+
 // AddFilters adds simple string filters to the existing set for a topic.
 // AND groups in the existing set are preserved.
 func (c *Client) AddFilters(topic string, filters []string) error {
-	c.mu.RLock()
-	existing := c.topicFilters[topic]
-	c.mu.RUnlock()
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	existing := c.topicFilters(topic)
 
 	simpleSet := make(map[string]bool)
 	var andGroups []any
@@ -443,15 +509,16 @@ func (c *Client) AddFilters(topic string, filters []string) error {
 	}
 	result = append(result, andGroups...)
 
-	return c.SetFilters(topic, result)
+	return c.setFiltersLocked(topic, result)
 }
 
 // RemoveFilters removes specific simple string filters from a topic.
 // AND groups in the existing set are preserved.
 func (c *Client) RemoveFilters(topic string, filters []string) error {
-	c.mu.RLock()
-	existing := c.topicFilters[topic]
-	c.mu.RUnlock()
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	existing := c.topicFilters(topic)
 
 	remove := make(map[string]bool)
 	for _, f := range filters {
@@ -471,7 +538,7 @@ func (c *Client) RemoveFilters(topic string, filters []string) error {
 		}
 	}
 
-	return c.SetFilters(topic, result)
+	return c.setFiltersLocked(topic, result)
 }
 
 // Emit publishes a message to a topic.
@@ -511,23 +578,39 @@ func (c *Client) Emit(topic string, data any, opts ...EmitOptions) error {
 }
 
 // SetPresence sets the presence data for this client, optionally scoped to a room.
+//
+// Presence is part of the session: the broker drops it with the connection,
+// so the client sends the last room presence (and the last presence without
+// a room) again after a reconnect.
 func (c *Client) SetPresence(data map[string]any, roomID ...string) error {
-	c.mu.RLock()
-	if c.status != StatusConnected {
-		c.mu.RUnlock()
+	c.sessionMu.Lock()
+	defer c.sessionMu.Unlock()
+
+	session, connected := c.connectedSession()
+	if !connected {
 		return ErrNotConnected
 	}
-	c.mu.RUnlock()
 
-	msg := &protocolMessage{
-		Type: msgTypePresSet,
-		Data: data,
+	room := ""
+	if len(roomID) > 0 {
+		room = roomID[0]
 	}
-	if len(roomID) > 0 && roomID[0] != "" {
-		msg.RoomID = roomID[0]
+	data = cloneMap(data)
+
+	if err := c.send(presenceFrame(data, room)); err != nil {
+		return err
 	}
 
-	return c.send(msg)
+	c.mu.Lock()
+	if c.session == session {
+		if room != "" {
+			c.roomPresence = &roomPresence{roomID: room, data: data}
+		} else {
+			c.projectPresence = data
+		}
+	}
+	c.mu.Unlock()
+	return nil
 }
 
 // GetPresence retrieves presence information for all actors, optionally for a specific room.
@@ -549,6 +632,7 @@ func (c *Client) GetPresence(roomID ...string) ([]ActorPresence, error) {
 	ackChan := make(chan *protocolMessage, 1)
 	c.mu.Lock()
 	c.pendingAcks["__presenceList__"] = ackChan
+	done := c.done
 	c.mu.Unlock()
 
 	defer func() {
@@ -587,7 +671,7 @@ func (c *Client) GetPresence(roomID ...string) ([]ActorPresence, error) {
 		return result, nil
 	case <-time.After(10 * time.Second):
 		return nil, fmt.Errorf("get presence: %w", ErrTimeout)
-	case <-c.done:
+	case <-done:
 		return nil, ErrNotConnected
 	}
 }
@@ -651,7 +735,9 @@ func (c *Client) emit(event string, args ...any) {
 	}
 }
 
-func (c *Client) send(msg *protocolMessage) error {
+// send writes one frame: a *protocolMessage, or a frame type of its own such
+// as setFiltersFrame.
+func (c *Client) send(msg any) error {
 	data, err := msgpack.Marshal(msg)
 	if err != nil {
 		return fmt.Errorf("marshal failed: %w", err)
@@ -677,6 +763,7 @@ func (c *Client) sendAndWait(msg *protocolMessage, ackType messageType, timeout 
 	msg.ID = fmt.Sprintf("%d", c.messageID)
 	ackChan := make(chan *protocolMessage, 1)
 	c.pendingAcks[msg.ID] = ackChan
+	done := c.done
 	c.mu.Unlock()
 
 	defer func() {
@@ -694,33 +781,25 @@ func (c *Client) sendAndWait(msg *protocolMessage, ackType messageType, timeout 
 		return resp, nil
 	case <-time.After(timeout):
 		return nil, ErrTimeout
-	case <-c.done:
+	case <-done:
 		return nil, ErrNotConnected
 	}
 }
 
-func (c *Client) readLoop() {
+// readLoop reads one connection until it fails or is dropped.
+func (c *Client) readLoop(conn *websocket.Conn, done chan struct{}) {
 	c.log("readLoop started")
 	defer func() {
 		c.log("readLoop exiting")
-		c.handleDisconnect()
+		c.handleDisconnect(conn)
 	}()
 
 	for {
 		select {
-		case <-c.done:
+		case <-done:
 			c.log("readLoop: done channel closed")
 			return
 		default:
-		}
-
-		c.mu.RLock()
-		conn := c.conn
-		c.mu.RUnlock()
-
-		if conn == nil {
-			c.log("readLoop: conn is nil")
-			return
 		}
 
 		c.log("readLoop: waiting for message...")
@@ -796,8 +875,9 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 	switch msg.Type {
 	case msgTypeMessage:
 		c.mu.RLock()
-		handler, ok := c.subscriptions[msg.Topic]
+		sub, ok := c.subscriptions[msg.Topic]
 		c.mu.RUnlock()
+		handler := sub.handler
 
 		if ok && handler != nil {
 			meta := MessageMeta{
@@ -904,11 +984,19 @@ func (c *Client) handleMessage(msg *protocolMessage) {
 	}
 }
 
-func (c *Client) handleDisconnect() {
+// handleDisconnect runs when conn's read loop ends. If conn is still the
+// current connection it is dropped, and an established connection starts
+// the reconnect loop. A connection still being set up is left to connect,
+// which sees the drop and fails.
+func (c *Client) handleDisconnect(conn *websocket.Conn) {
 	c.mu.Lock()
+	if !c.dropConnLocked(conn) {
+		c.mu.Unlock()
+		return
+	}
 	wasConnected := c.status == StatusConnected
 	c.status = StatusDisconnected
-	c.authenticated = false
+	session := c.session
 	c.mu.Unlock()
 
 	if !wasConnected {
@@ -918,65 +1006,56 @@ func (c *Client) handleDisconnect() {
 	c.emit("disconnected")
 
 	if c.options.Reconnect != nil && *c.options.Reconnect {
-		go c.reconnect()
+		go c.reconnect(session)
 	}
 }
 
-func (c *Client) reconnect() {
-	c.mu.Lock()
-	c.status = StatusReconnecting
-	c.reconnectCount++
-	attempt := c.reconnectCount
-	c.mu.Unlock()
-
-	if c.options.MaxReconnectAttempts > 0 && attempt > c.options.MaxReconnectAttempts {
-		c.log("Max reconnect attempts reached")
+// reconnect retries connect until it succeeds, the attempts run out, another
+// caller connects, or Close ends the session.
+func (c *Client) reconnect(session uint64) {
+	for {
 		c.mu.Lock()
-		c.status = StatusDisconnected
-		c.mu.Unlock()
-		return
-	}
-
-	c.emit("reconnecting", attempt)
-	c.log("Reconnecting... attempt", attempt)
-
-	time.Sleep(c.options.ReconnectInterval)
-
-	c.mu.Lock()
-	c.status = StatusDisconnected
-	c.mu.Unlock()
-
-	if err := c.Connect(); err != nil {
-		c.log("Reconnect failed:", err)
-		go c.reconnect()
-		return
-	}
-
-	// Resubscribe to all topics
-	c.mu.RLock()
-	topics := make([]string, 0, len(c.subscriptions))
-	handlers := make(map[string]MessageHandler)
-	for topic, handler := range c.subscriptions {
-		topics = append(topics, topic)
-		handlers[topic] = handler
-	}
-	c.mu.RUnlock()
-
-	for _, topic := range topics {
-		if err := c.Subscribe(topic, handlers[topic]); err != nil {
-			c.log("Resubscribe failed for", topic, ":", err)
+		if c.session != session || c.status == StatusConnected || c.status == StatusConnecting {
+			c.mu.Unlock()
+			return
 		}
+		c.reconnectCount++
+		attempt := c.reconnectCount
+		if c.options.MaxReconnectAttempts > 0 && attempt > c.options.MaxReconnectAttempts {
+			c.status = StatusDisconnected
+			c.mu.Unlock()
+			c.log("Max reconnect attempts reached")
+			return
+		}
+		c.status = StatusReconnecting
+		c.mu.Unlock()
+
+		c.emit("reconnecting", attempt)
+		c.log("Reconnecting... attempt", attempt)
+
+		time.Sleep(c.options.ReconnectInterval)
+
+		// connect restores the session before it reports connected.
+		if err := c.connect(session); err != nil {
+			c.log("Reconnect failed:", err)
+			continue
+		}
+		return
 	}
 }
 
-func (c *Client) startHeartbeat() {
+func (c *Client) startHeartbeat(conn *websocket.Conn) {
 	if c.options.HeartbeatInterval <= 0 {
 		return
 	}
 
 	c.mu.Lock()
-	c.heartbeatDone = make(chan struct{})
-	done := c.heartbeatDone
+	if c.conn != conn {
+		c.mu.Unlock()
+		return
+	}
+	done := make(chan struct{})
+	c.heartbeatDone = done
 	c.mu.Unlock()
 
 	go func() {
@@ -988,15 +1067,6 @@ func (c *Client) startHeartbeat() {
 			case <-done:
 				return
 			case <-ticker.C:
-				c.mu.RLock()
-				conn := c.conn
-				status := c.status
-				c.mu.RUnlock()
-
-				if conn == nil || status != StatusConnected {
-					return
-				}
-
 				c.writeMu.Lock()
 				err := conn.WriteMessage(websocket.BinaryMessage, []byte{})
 				c.writeMu.Unlock()
@@ -1120,18 +1190,20 @@ func (l *Lobby) LobbyID() string {
 
 // Subscribe subscribes to this lobby's presence events.
 // Returns a snapshot of current presence when subscription completes.
+//
+// Once subscribed, the lobby is part of the session and is subscribed again
+// after a reconnect (the snapshot of that resubscribe is not delivered).
 func (l *Lobby) Subscribe() (LobbyPresenceState, error) {
-	l.client.mu.RLock()
-	if l.client.status != StatusConnected {
-		l.client.mu.RUnlock()
-		return nil, ErrNotConnected
-	}
-	l.client.mu.RUnlock()
-
 	ackKey := fmt.Sprintf("lobbySubscribed:%s", l.lobbyID)
 	ackChan := make(chan *protocolMessage, 1)
 
 	l.client.mu.Lock()
+	if l.client.status != StatusConnected {
+		l.client.mu.Unlock()
+		return nil, ErrNotConnected
+	}
+	session := l.client.session
+	done := l.client.done
 	l.client.pendingAcks[ackKey] = ackChan
 	l.client.mu.Unlock()
 
@@ -1151,22 +1223,35 @@ func (l *Lobby) Subscribe() (LobbyPresenceState, error) {
 
 	select {
 	case resp := <-ackChan:
+		l.client.mu.Lock()
+		if l.client.session == session {
+			l.client.lobbies[l.lobbyID] = struct{}{}
+		}
+		l.client.mu.Unlock()
 		return parseLobbyPresence(resp.Presence), nil
 	case <-time.After(10 * time.Second):
 		return nil, fmt.Errorf("lobby subscribe: %w", ErrTimeout)
-	case <-l.client.done:
+	case <-done:
 		return nil, ErrNotConnected
 	}
 }
 
 // Unsubscribe unsubscribes from this lobby's presence events (fire-and-forget).
+//
+// The lobby leaves the session even when Unsubscribe returns an error, so it
+// is not subscribed again after a reconnect.
 func (l *Lobby) Unsubscribe() error {
-	l.client.mu.RLock()
-	if l.client.status != StatusConnected {
-		l.client.mu.RUnlock()
+	l.client.sessionMu.Lock()
+	defer l.client.sessionMu.Unlock()
+
+	l.client.mu.Lock()
+	delete(l.client.lobbies, l.lobbyID)
+	connected := l.client.status == StatusConnected
+	l.client.mu.Unlock()
+
+	if !connected {
 		return ErrNotConnected
 	}
-	l.client.mu.RUnlock()
 
 	return l.client.send(&protocolMessage{
 		Type:    msgTypeLobbyUnsubscribe,
@@ -1176,17 +1261,15 @@ func (l *Lobby) Unsubscribe() error {
 
 // FetchPresence fetches the current presence state for the lobby.
 func (l *Lobby) FetchPresence() (LobbyPresenceState, error) {
-	l.client.mu.RLock()
-	if l.client.status != StatusConnected {
-		l.client.mu.RUnlock()
-		return nil, ErrNotConnected
-	}
-	l.client.mu.RUnlock()
-
 	ackKey := fmt.Sprintf("lobbyPresenceList:%s", l.lobbyID)
 	ackChan := make(chan *protocolMessage, 1)
 
 	l.client.mu.Lock()
+	if l.client.status != StatusConnected {
+		l.client.mu.Unlock()
+		return nil, ErrNotConnected
+	}
+	done := l.client.done
 	l.client.pendingAcks[ackKey] = ackChan
 	l.client.mu.Unlock()
 
@@ -1209,7 +1292,7 @@ func (l *Lobby) FetchPresence() (LobbyPresenceState, error) {
 		return parseLobbyPresence(resp.Presence), nil
 	case <-time.After(10 * time.Second):
 		return nil, fmt.Errorf("fetch lobby presence: %w", ErrTimeout)
-	case <-l.client.done:
+	case <-done:
 		return nil, ErrNotConnected
 	}
 }
